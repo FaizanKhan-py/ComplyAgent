@@ -220,7 +220,8 @@ export function Playground() {
       {config.data && config.data.llm_model === null ? (
         <Notice tone="info">
           No answer model is configured, so responses show the retrieved passages without a generated
-          summary. Set <code>ANTHROPIC_API_KEY</code> on the backend to enable generated answers.
+          summary. Set <code>ANTHROPIC_API_KEY</code> or <code>LLM_PROVIDER=ollama</code> on the backend to
+          enable generated answers.
         </Notice>
       ) : null}
 

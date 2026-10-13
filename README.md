@@ -20,7 +20,7 @@ Browser ── React admin panel (Vite, TypeScript)
         FastAPI backend ──► SQLite knowledge base   documents, chunks, embeddings, activity log
               │         ──► storage/uploads/        original files, named by document ID
               ├──► Embeddings: BAAI/bge-small-en-v1.5, run locally with fastembed (no API key)
-              └──► Answers:    Claude (Anthropic API), optional
+              └──► Answers:    Claude (Anthropic API) or a local Ollama model, optional
 ```
 
 | Concern | Choice | Why |
@@ -28,7 +28,7 @@ Browser ── React admin panel (Vite, TypeScript)
 | Backend | FastAPI, Python 3.10+ | The team's code is Python |
 | Knowledge base | One SQLite file; vectors stored as blobs, cosine search with NumPy | Zero setup, and exact search is instant at policy-corpus size (thousands of chunks). No separate vector database to run |
 | Embeddings | `fastembed` running `BAAI/bge-small-en-v1.5` locally | Semantic search with no API key and no cost. The model (about 70 MB) is downloaded once |
-| Answer model | Claude `claude-opus-5-5` through the `anthropic` SDK | Optional. Without a key the system runs in retrieval-only mode |
+| Answer model | Claude `claude-opus-5-5` through the `anthropic` SDK, or a local model through Ollama | Optional. With neither configured the system runs in retrieval-only mode |
 | Frontend | React 19, TypeScript, Vite, React Router, plain CSS | No UI framework dependency |
 
 The knowledge base is separate from the team's MySQL database, which is not required to run this part.
@@ -79,10 +79,16 @@ git-ignored; `backend/.env.example` documents every variable.
 | `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Any text model fastembed supports |
 | `RAG_TOP_K` | `5` | Chunks retrieved per question |
 | `RAG_MIN_SCORE` | provider default (`0.6`) | Chunks scoring below this are discarded |
-| `LLM_PROVIDER` | `auto` | `auto`: Claude if `ANTHROPIC_API_KEY` is set, else retrieval-only. `anthropic`: always Claude. `none`: never |
+| `LLM_PROVIDER` | `auto` | `auto`: Claude if `ANTHROPIC_API_KEY` is set, else retrieval-only. `anthropic`: always Claude. `ollama`: a local Ollama model. `none`: never |
 | `ANTHROPIC_API_KEY` | empty | Key for generated answers |
 | `ANTHROPIC_MODEL` | `claude-opus-5-5` | Answer model |
+| `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama server, used when `LLM_PROVIDER=ollama` |
+| `OLLAMA_MODEL` | `llama3.2` | Ollama answer model. Pull it first with `ollama pull llama3.2` |
 | `LLM_TIMEOUT_SECONDS` | `60` | Per-request timeout |
+
+To generate answers locally with no API key, install [Ollama](https://ollama.com), run
+`ollama pull llama3.2`, and set `LLM_PROVIDER=ollama`. A small local model is slower and less
+precise with citations than Claude, so raise `LLM_TIMEOUT_SECONDS` on a machine without a GPU.
 
 Generate an admin token with `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 
@@ -126,7 +132,7 @@ the bytes match the type (a `.pdf` must really be a PDF).
 
    | `answer_mode` | When | Answer |
    |---|---|---|
-   | `generated` | Chunks were found and Claude answered | Claude's answer with `[n]` citations. `cited` marks the sources it used. `insufficient_evidence` is true if Claude judged the passages do not answer the question |
+   | `generated` | Chunks were found and the answer model (Claude or Ollama) answered | The model's answer with `[n]` citations. `cited` marks the sources it used. `insufficient_evidence` is true if the model judged the passages do not answer the question |
    | `retrieval_only` | Chunks were found but no LLM is configured, or the LLM call failed (`warning` says why) | A fixed message; the passages themselves are the result |
    | `no_evidence` | Nothing scored above the threshold, or nothing is indexed | A fixed "not found" message. The LLM is not called |
 
@@ -174,14 +180,14 @@ configured. Errors always have the shape `{"error": {"code": "...", "message": "
 7. **Documents**: delete the hardship policy, then ask the hardship question again. It is no
    longer cited.
 
-With `ANTHROPIC_API_KEY` set, step 6 also shows a written answer with clickable `[n]`
+With `ANTHROPIC_API_KEY` set or `LLM_PROVIDER=ollama`, step 6 also shows a written answer with clickable `[n]`
 citations. Without it, the panel says so and shows the retrieved passages only.
 
 ## Tests and checks
 
 ```bash
 # Backend (from backend/, with the virtualenv active)
-pytest                   # 69 tests, no network: keyword embedder + scripted LLM
+pytest                   # 80 tests, no network: keyword embedder + scripted LLM
 pytest -m integration    # 6 tests using the real embedding model
 ruff check .
 

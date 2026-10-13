@@ -39,6 +39,8 @@ class Settings:
     rag_min_score: float | None = None
     llm_provider: str = "auto"
     anthropic_model: str = "claude-opus-5-5"
+    ollama_base_url: str = "http://127.0.0.1:11434"
+    ollama_model: str = "llama3.2"
     llm_timeout_seconds: float = 60.0
 
     def __post_init__(self) -> None:
@@ -94,6 +96,8 @@ class Settings:
             rag_min_score=_opt_float("RAG_MIN_SCORE"),
             llm_provider=os.getenv("LLM_PROVIDER", "auto").strip().lower(),
             anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-opus-5-5").strip(),
+            ollama_base_url=(os.getenv("OLLAMA_BASE_URL", "").strip() or "http://127.0.0.1:11434"),
+            ollama_model=os.getenv("OLLAMA_MODEL", "").strip() or "llama3.2",
             llm_timeout_seconds=float(_int("LLM_TIMEOUT_SECONDS", 60)),
             **kwargs,
         )

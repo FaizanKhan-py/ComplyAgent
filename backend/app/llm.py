@@ -1,4 +1,4 @@
-"""Answer generation from retrieved policy passages, using Claude."""
+"""Answer generation from retrieved policy passages, using Claude or a local Ollama model."""
 
 from __future__ import annotations
 
@@ -9,7 +9,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Protocol
 
+import httpx
 from pydantic import BaseModel, Field
+from pydantic import ValidationError as SchemaError
 
 from .config import Settings
 
@@ -94,6 +96,18 @@ def build_user_message(question: str, sources: list[SourcePassage]) -> str:
     return "<sources>\n" + "\n".join(blocks) + f"\n</sources>\n\nQuestion: {question}"
 
 
+def build_messages(
+    question: str, sources: list[SourcePassage], history: list[dict[str, str]]
+) -> list[dict[str, str]]:
+    messages = [
+        {"role": m["role"], "content": m["content"]} for m in history[-MAX_HISTORY_MESSAGES:]
+    ]
+    while messages and messages[0]["role"] != "user":
+        messages.pop(0)
+    messages.append({"role": "user", "content": build_user_message(question, sources)})
+    return messages
+
+
 class AnthropicAnswerGenerator:
     def __init__(self, model: str, timeout: float) -> None:
         import anthropic
@@ -109,12 +123,7 @@ class AnthropicAnswerGenerator:
     ) -> GeneratedAnswer:
         import anthropic
 
-        messages = [
-            {"role": m["role"], "content": m["content"]} for m in history[-MAX_HISTORY_MESSAGES:]
-        ]
-        while messages and messages[0]["role"] != "user":
-            messages.pop(0)
-        messages.append({"role": "user", "content": build_user_message(question, sources)})
+        messages = build_messages(question, sources, history)
 
         try:
             response = self._client.messages.parse(
@@ -178,6 +187,100 @@ class AnthropicAnswerGenerator:
         return "ok", f"{self.model} configured (not yet called; health checks do not spend tokens)"
 
 
+class OllamaAnswerGenerator:
+    """Answers from a model served by a local Ollama server. No API key and no cost."""
+
+    def __init__(
+        self,
+        model: str,
+        base_url: str,
+        timeout: float,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        self.model = model
+        self._client = httpx.Client(base_url=base_url, timeout=timeout, transport=transport)
+        self._last_error: str | None = None
+        self._last_success: str | None = None
+
+    def generate(
+        self, question: str, sources: list[SourcePassage], history: list[dict[str, str]]
+    ) -> GeneratedAnswer:
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages += build_messages(question, sources, history)
+
+        try:
+            response = self._client.post(
+                "/api/chat",
+                json={
+                    "model": self.model,
+                    "messages": messages,
+                    "stream": False,
+                    # A JSON schema here makes Ollama constrain the output to that shape.
+                    "format": _AnswerSchema.model_json_schema(),
+                    "options": {"temperature": 0},
+                },
+            )
+        except httpx.TimeoutException as exc:
+            raise self._fail("llm_timeout", "Ollama timed out.", True) from exc
+        except httpx.HTTPError as exc:
+            raise self._fail(
+                "llm_unreachable",
+                f"Could not reach Ollama at {self._client.base_url}. Is it running?",
+                True,
+            ) from exc
+
+        if response.status_code == 404:
+            raise self._fail(
+                "llm_model_not_found",
+                f"Ollama does not have the model '{self.model}'. Run: ollama pull {self.model}",
+            )
+        if response.status_code >= 400:
+            retryable = response.status_code >= 500
+            raise self._fail(
+                "llm_unavailable" if retryable else "llm_request_rejected",
+                f"Ollama returned an error (HTTP {response.status_code}).",
+                retryable,
+            )
+
+        try:
+            body = response.json()
+            if body.get("done_reason") == "length":
+                raise ValueError("truncated")
+            parsed = _AnswerSchema.model_validate_json(body["message"]["content"])
+        except (ValueError, KeyError, TypeError, SchemaError) as exc:
+            raise self._fail(
+                "llm_bad_output", "The model returned an incomplete answer.", True
+            ) from exc
+
+        self._last_error = None
+        self._last_success = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        return GeneratedAnswer(
+            parsed.answer.strip(), parsed.insufficient_evidence, parsed.cited_source_ids
+        )
+
+    def _fail(self, code: str, message: str, retryable: bool = False) -> LLMError:
+        self._last_error = message
+        logger.warning("Answer generation failed: %s", code)
+        return LLMError(code, message, retryable)
+
+    def health(self) -> tuple[str, str]:
+        """Asks Ollama which models it has. This is local and does not run the model."""
+        try:
+            response = self._client.get("/api/tags", timeout=3.0)
+            response.raise_for_status()
+            names = {m["name"] for m in response.json()["models"]}
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            return "error", f"Ollama is not reachable at {self._client.base_url}"
+        wanted = self.model if ":" in self.model else f"{self.model}:latest"
+        if wanted not in names:
+            return "error", f"Ollama is running but '{self.model}' is not pulled"
+        if self._last_error:
+            return "error", f"{self.model} (Ollama): last request failed. {self._last_error}"
+        if self._last_success:
+            return "ok", f"{self.model} (Ollama): last request succeeded at {self._last_success}"
+        return "ok", f"{self.model} (Ollama) is available"
+
+
 def build_generator(settings: Settings) -> AnswerGenerator | None:
     """None means retrieval-only mode: passages are returned without a generated answer."""
     provider = settings.llm_provider
@@ -186,6 +289,10 @@ def build_generator(settings: Settings) -> AnswerGenerator | None:
     has_key = bool(os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN"))
     if provider == "anthropic" or (provider == "auto" and has_key):
         return AnthropicAnswerGenerator(settings.anthropic_model, settings.llm_timeout_seconds)
+    if provider == "ollama":
+        return OllamaAnswerGenerator(
+            settings.ollama_model, settings.ollama_base_url, settings.llm_timeout_seconds
+        )
     if provider == "auto":
         return None
-    raise ValueError(f"Unknown LLM_PROVIDER '{provider}' (use auto, anthropic or none)")
+    raise ValueError(f"Unknown LLM_PROVIDER '{provider}' (use auto, anthropic, ollama or none)")

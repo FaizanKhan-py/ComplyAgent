@@ -333,7 +333,10 @@ class KnowledgeBase:
         if self.generator is None:
             components["llm"] = {
                 "status": "degraded",
-                "detail": "Not configured: answers are retrieval-only (set ANTHROPIC_API_KEY)",
+                "detail": (
+                    "Not configured: answers are retrieval-only "
+                    "(set ANTHROPIC_API_KEY or LLM_PROVIDER=ollama)"
+                ),
             }
         else:
             status, detail = self.generator.health()
