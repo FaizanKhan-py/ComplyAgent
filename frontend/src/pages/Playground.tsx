@@ -143,8 +143,13 @@ function Answer({ turn, onRetry }: { turn: Turn; onRetry: () => void }) {
 
 let turnId = 0
 
-export function Playground() {
+const noHealth = () => Promise.resolve(null)
+
+/** `showModelStatus` is off for ordinary users, who may not read the service health. */
+export function Playground({ showModelStatus = true }: { showModelStatus?: boolean }) {
   const config = useResource(api.config)
+  const health = useResource(showModelStatus ? api.health : noHealth, showModelStatus ? 15000 : undefined)
+  const llm = health.data?.components.llm
   const [turns, setTurns] = useState<Turn[]>([])
   const [question, setQuestion] = useState('')
   const [topK, setTopK] = useState('')
@@ -220,8 +225,22 @@ export function Playground() {
       {config.data && config.data.llm_model === null ? (
         <Notice tone="info">
           No answer model is configured, so responses show the retrieved passages without a generated
-          summary. Set <code>ANTHROPIC_API_KEY</code> or <code>LLM_PROVIDER=ollama</code> on the backend to
-          enable generated answers.
+          summary.{' '}
+          {showModelStatus ? (
+            <>
+              Set <code>ANTHROPIC_API_KEY</code> or <code>LLM_PROVIDER=ollama</code> on the backend to enable
+              generated answers.
+            </>
+          ) : (
+            'An administrator can enable generated answers.'
+          )}
+        </Notice>
+      ) : null}
+
+      {config.data?.llm_model && llm?.status === 'error' ? (
+        <Notice tone="warn">
+          The answer model is not available right now, so responses will show the retrieved passages
+          only. {llm.detail}
         </Notice>
       ) : null}
 

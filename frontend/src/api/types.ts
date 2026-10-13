@@ -61,6 +61,7 @@ export interface AdminConfig {
   chunk_size: number
   chunk_overlap: number
   embedding_model: string
+  llm_provider: string | null
   llm_model: string | null
   default_top_k: number
   default_min_score: number
@@ -112,4 +113,32 @@ export interface DeleteResult {
   id: string
   deleted: boolean
   chunks_removed: number
+}
+
+export type Role = 'user' | 'admin'
+
+export interface User {
+  id: number
+  email: string
+  full_name: string
+  role: Role
+  created_at: string
+  last_login_at: string | null
+}
+
+export interface SessionInfo {
+  user: User
+  /** Sent back in the X-CSRF-Token header on every state-changing request. */
+  csrf_token: string
+}
+
+export interface AuthStatus {
+  auth_required: boolean
+  registration_open: boolean
+}
+
+export interface RegisterRequest {
+  full_name: string
+  email: string
+  password: string
 }

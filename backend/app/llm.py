@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import logging
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Protocol
@@ -74,7 +75,26 @@ class _AnswerSchema(BaseModel):
     cited_source_ids: list[int] = Field(description="Numbers of the passages relied on.")
 
 
+class _Statement(BaseModel):
+    text: str = Field(description="One sentence of the answer, without citation markers.")
+    source_ids: list[int] = Field(description="Numbers of the passages that state this.")
+
+
+class _StatementsSchema(BaseModel):
+    """Small local models rarely write [n] markers inside prose, but they attribute reliably
+    when each sentence has its own list of sources. The markers are then added in code."""
+
+    statements: list[_Statement]
+    insufficient_evidence: bool = Field(
+        description="True when the passages do not contain enough information to answer."
+    )
+
+
+INSUFFICIENT_EVIDENCE_ANSWER = "The indexed policies do not cover this question."
+
+
 class AnswerGenerator(Protocol):
+    provider: str
     model: str
 
     def generate(
@@ -109,6 +129,8 @@ def build_messages(
 
 
 class AnthropicAnswerGenerator:
+    provider = "anthropic"
+
     def __init__(self, model: str, timeout: float) -> None:
         import anthropic
 
@@ -190,14 +212,20 @@ class AnthropicAnswerGenerator:
 class OllamaAnswerGenerator:
     """Answers from a model served by a local Ollama server. No API key and no cost."""
 
+    provider = "ollama"
+
     def __init__(
         self,
         model: str,
         base_url: str,
         timeout: float,
+        num_ctx: int | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self.model = model
+        self._options: dict = {"temperature": 0}
+        if num_ctx:
+            self._options["num_ctx"] = num_ctx
         self._client = httpx.Client(base_url=base_url, timeout=timeout, transport=transport)
         self._last_error: str | None = None
         self._last_success: str | None = None
@@ -216,8 +244,8 @@ class OllamaAnswerGenerator:
                     "messages": messages,
                     "stream": False,
                     # A JSON schema here makes Ollama constrain the output to that shape.
-                    "format": _AnswerSchema.model_json_schema(),
-                    "options": {"temperature": 0},
+                    "format": _StatementsSchema.model_json_schema(),
+                    "options": self._options,
                 },
             )
         except httpx.TimeoutException as exc:
@@ -236,9 +264,11 @@ class OllamaAnswerGenerator:
             )
         if response.status_code >= 400:
             retryable = response.status_code >= 500
+            reason = _ollama_error(response)
             raise self._fail(
                 "llm_unavailable" if retryable else "llm_request_rejected",
-                f"Ollama returned an error (HTTP {response.status_code}).",
+                f"Ollama returned an error (HTTP {response.status_code})"
+                + (f": {reason}" if reason else "."),
                 retryable,
             )
 
@@ -246,7 +276,8 @@ class OllamaAnswerGenerator:
             body = response.json()
             if body.get("done_reason") == "length":
                 raise ValueError("truncated")
-            parsed = _AnswerSchema.model_validate_json(body["message"]["content"])
+            parsed = _StatementsSchema.model_validate_json(body["message"]["content"])
+            answer, insufficient, cited = _compose(parsed)
         except (ValueError, KeyError, TypeError, SchemaError) as exc:
             raise self._fail(
                 "llm_bad_output", "The model returned an incomplete answer.", True
@@ -254,9 +285,7 @@ class OllamaAnswerGenerator:
 
         self._last_error = None
         self._last_success = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        return GeneratedAnswer(
-            parsed.answer.strip(), parsed.insufficient_evidence, parsed.cited_source_ids
-        )
+        return GeneratedAnswer(answer, insufficient, cited)
 
     def _fail(self, code: str, message: str, retryable: bool = False) -> LLMError:
         self._last_error = message
@@ -268,17 +297,53 @@ class OllamaAnswerGenerator:
         try:
             response = self._client.get("/api/tags", timeout=3.0)
             response.raise_for_status()
-            names = {m["name"] for m in response.json()["models"]}
+            models = {m["name"]: m for m in response.json()["models"]}
         except (httpx.HTTPError, ValueError, KeyError, TypeError):
-            return "error", f"Ollama is not reachable at {self._client.base_url}"
+            return "error", f"Ollama is not reachable at {self._client.base_url}. Is it running?"
         wanted = self.model if ":" in self.model else f"{self.model}:latest"
-        if wanted not in names:
-            return "error", f"Ollama is running but '{self.model}' is not pulled"
+        if wanted not in models:
+            return "error", (
+                f"Ollama is running but '{self.model}' is not pulled. Run: ollama pull {self.model}"
+            )
+        # Older Ollama versions do not report capabilities; then this check is skipped.
+        capabilities = models[wanted].get("capabilities")
+        if capabilities and "completion" not in capabilities:
+            return "error", f"'{self.model}' is not a chat model (it cannot generate answers)"
         if self._last_error:
             return "error", f"{self.model} (Ollama): last request failed. {self._last_error}"
         if self._last_success:
             return "ok", f"{self.model} (Ollama): last request succeeded at {self._last_success}"
         return "ok", f"{self.model} (Ollama) is available"
+
+
+def _compose(parsed: _StatementsSchema) -> tuple[str, bool, list[int]]:
+    """Join the statements into prose with [n] markers. Returns the answer, whether the
+    evidence was insufficient, and every source that was used."""
+    parts: list[str] = []
+    cited: list[int] = []
+    for statement in parsed.statements:
+        text = re.sub(r"\s*\[\d+\]", "", statement.text).strip()
+        if not text:
+            continue
+        ids = sorted(set(statement.source_ids))
+        cited += [i for i in ids if i not in cited]
+        parts.append(text + (" " + "".join(f"[{i}]" for i in ids) if ids else ""))
+    # Small models often set the flag on a partial answer that they did support with sources.
+    # Only an answer that cites nothing counts as insufficient evidence.
+    insufficient = parsed.insufficient_evidence and not cited
+    if not parts:
+        if not insufficient:
+            raise ValueError("empty answer")
+        return INSUFFICIENT_EVIDENCE_ANSWER, True, []
+    return " ".join(parts), insufficient, cited
+
+
+def _ollama_error(response: httpx.Response) -> str:
+    """Ollama's own explanation, e.g. '"nomic-embed-text" does not support chat'."""
+    try:
+        return str(response.json()["error"])[:200]
+    except (ValueError, KeyError, TypeError):
+        return ""
 
 
 def build_generator(settings: Settings) -> AnswerGenerator | None:
@@ -291,7 +356,10 @@ def build_generator(settings: Settings) -> AnswerGenerator | None:
         return AnthropicAnswerGenerator(settings.anthropic_model, settings.llm_timeout_seconds)
     if provider == "ollama":
         return OllamaAnswerGenerator(
-            settings.ollama_model, settings.ollama_base_url, settings.llm_timeout_seconds
+            settings.ollama_model,
+            settings.ollama_base_url,
+            settings.llm_timeout_seconds,
+            settings.ollama_num_ctx,
         )
     if provider == "auto":
         return None

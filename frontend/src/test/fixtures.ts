@@ -12,6 +12,7 @@ export const config: AdminConfig = {
   chunk_size: 500,
   chunk_overlap: 80,
   embedding_model: 'fastembed:BAAI/bge-small-en-v1.5',
+  llm_provider: 'anthropic',
   llm_model: 'claude-opus-5-5',
   default_top_k: 5,
   default_min_score: 0.6,

@@ -1,17 +1,19 @@
 import type {
   ActivityEvent,
   AdminConfig,
+  AuthStatus,
   DeleteResult,
   Health,
   KnowledgeBaseStats,
   PolicyDocument,
   QueryRequest,
   QueryResponse,
+  RegisterRequest,
+  SessionInfo,
+  User,
 } from './types'
 
 const BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '')
-const TOKEN_KEY = 'complyagent.adminToken'
-
 export class ApiError extends Error {
   readonly status: number
   readonly code: string
@@ -24,34 +26,16 @@ export class ApiError extends Error {
   }
 }
 
-/** The admin token lives in sessionStorage: it is gone when the tab closes. */
-export const tokenStore = {
-  get(): string | null {
-    try {
-      return sessionStorage.getItem(TOKEN_KEY)
-    } catch {
-      return null
-    }
-  },
-  set(token: string) {
-    try {
-      sessionStorage.setItem(TOKEN_KEY, token)
-    } catch {
-      /* storage unavailable: the token lasts for this page load only */
-    }
-  },
-  clear() {
-    try {
-      sessionStorage.removeItem(TOKEN_KEY)
-    } catch {
-      /* nothing to clear */
-    }
-  },
-}
+/**
+ * The session itself is an HttpOnly cookie that scripts cannot read. This token only proves a
+ * request was made by this page (CSRF protection); it is kept in memory, never in storage, and
+ * is fetched again from /api/auth/me after a reload.
+ */
+let csrfToken: string | null = null
 
 let onUnauthorized: (() => void) | null = null
 
-/** Called when the API rejects the stored token, so the app can return to the sign-in screen. */
+/** Called when the API says the session is gone, so the app can return to the sign-in page. */
 export function setUnauthorizedHandler(handler: (() => void) | null) {
   onUnauthorized = handler
 }
@@ -60,22 +44,24 @@ interface RequestOptions {
   method?: string
   json?: unknown
   body?: FormData
-  token?: string | null
+  /** False for the sign-in calls themselves, where a 401 is an answer and not a lost session. */
+  session?: boolean
   signal?: AbortSignal
 }
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const usesStoredToken = options.token === undefined
-  const token = usesStoredToken ? tokenStore.get() : options.token
+  const method = options.method ?? 'GET'
   const headers: Record<string, string> = {}
-  if (token) headers.Authorization = `Bearer ${token}`
+  if (csrfToken && method !== 'GET') headers['X-CSRF-Token'] = csrfToken
   if (options.json !== undefined) headers['Content-Type'] = 'application/json'
 
   let response: Response
   try {
     response = await fetch(`${BASE_URL}${path}`, {
-      method: options.method ?? 'GET',
+      method,
       headers,
+      // The cookie must travel when the API is on another origin (VITE_API_BASE_URL).
+      credentials: BASE_URL ? 'include' : 'same-origin',
       body: options.json !== undefined ? JSON.stringify(options.json) : options.body,
       signal: options.signal,
     })
@@ -105,13 +91,40 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
       message = 'Cannot reach the ComplyAgent API. Check that the backend is running.'
     }
   }
-  if (response.status === 401 && usesStoredToken) onUnauthorized?.()
+  if (response.status === 401 && options.session !== false) {
+    csrfToken = null
+    onUnauthorized?.()
+  }
   throw new ApiError(response.status, code, message)
 }
 
+async function startSession(pending: Promise<SessionInfo>): Promise<User> {
+  const session = await pending
+  csrfToken = session.csrf_token
+  return session.user
+}
+
 export const api = {
-  authStatus: () => request<{ auth_required: boolean }>('/api/auth/status', { token: null }),
-  verifyToken: (token: string) => request<{ ok: boolean }>('/api/admin/session', { token }),
+  authStatus: () => request<AuthStatus>('/api/auth/status', { session: false }),
+  /** The signed-in user, or a 401 ApiError when there is no valid session. */
+  me: () => startSession(request<SessionInfo>('/api/auth/me', { session: false })),
+  login: (email: string, password: string) =>
+    startSession(
+      request<SessionInfo>('/api/auth/login', {
+        method: 'POST',
+        json: { email, password },
+        session: false,
+      }),
+    ),
+  register: (body: RegisterRequest) =>
+    request<User>('/api/auth/register', { method: 'POST', json: body, session: false }),
+  logout: async () => {
+    try {
+      await request<{ ok: boolean }>('/api/auth/logout', { method: 'POST', session: false })
+    } finally {
+      csrfToken = null
+    }
+  },
 
   health: () => request<Health>('/api/admin/health'),
   config: () => request<AdminConfig>('/api/admin/config'),

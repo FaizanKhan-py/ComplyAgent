@@ -94,6 +94,37 @@ class PublicHealth(BaseModel):
 
 class AuthStatus(BaseModel):
     auth_required: bool
+    registration_open: bool
+
+
+class User(BaseModel):
+    id: int
+    email: str
+    full_name: str
+    role: Literal["user", "admin"]
+    created_at: str
+    last_login_at: str | None = None
+
+
+class SessionInfo(BaseModel):
+    user: User
+    csrf_token: str  # sent back in the X-CSRF-Token header on every state-changing request
+
+
+class RegisterRequest(BaseModel):
+    # Lengths here only bound the request; the real rules give friendlier messages.
+    full_name: str = Field(max_length=500)
+    email: str = Field(max_length=500)
+    password: str = Field(max_length=1024)
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(max_length=500)
+    password: str = Field(max_length=1024)
+
+
+class Ok(BaseModel):
+    ok: bool
 
 
 class AdminConfig(BaseModel):
@@ -102,6 +133,7 @@ class AdminConfig(BaseModel):
     chunk_size: int
     chunk_overlap: int
     embedding_model: str
+    llm_provider: str | None
     llm_model: str | None
     default_top_k: int
     default_min_score: float

@@ -1,5 +1,5 @@
 import { mockApi } from '../test/fixtures'
-import { api, ApiError, setUnauthorizedHandler, tokenStore } from './client'
+import { api, ApiError, setUnauthorizedHandler } from './client'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -7,18 +7,37 @@ afterEach(() => {
 })
 
 describe('api client', () => {
-  it('sends the stored admin token as a bearer header', async () => {
-    tokenStore.set('secret-token')
+  it('sends the session cookie but never a token it stored itself', async () => {
     const { calls } = mockApi({ 'GET /api/admin/documents': () => ({ body: { documents: [] } }) })
     await expect(api.listDocuments()).resolves.toEqual([])
-    expect(calls[0].init.headers).toEqual({ Authorization: 'Bearer secret-token' })
+    expect(calls[0].init.headers).toEqual({})
+    expect(calls[0].init.credentials).toBe('same-origin')
+    expect(sessionStorage.length + localStorage.length).toBe(0)
   })
 
-  it('does not send the token to the public auth-status endpoint', async () => {
-    tokenStore.set('secret-token')
-    const { calls } = mockApi({ 'GET /api/auth/status': () => ({ body: { auth_required: true } }) })
-    await api.authStatus()
-    expect(calls[0].init.headers).toEqual({})
+  it('adds the CSRF token from sign-in to state-changing requests only, until sign-out', async () => {
+    const user = { id: 1, email: 'ada@example.com', full_name: 'Ada', role: 'user' }
+    const { calls } = mockApi({
+      'POST /api/auth/login': () => ({ body: { user, csrf_token: 'csrf-abc' } }),
+      'GET /api/admin/kb/stats': () => ({ body: {} }),
+      'POST /api/admin/kb/rebuild': () => ({ status: 202, body: { queued: 0 } }),
+      'POST /api/auth/logout': () => ({ body: { ok: true } }),
+    })
+    await expect(api.login('ada@example.com', 'a password')).resolves.toEqual(user)
+    expect(calls[0].init.headers).toEqual({ 'Content-Type': 'application/json' })
+    expect(JSON.parse(calls[0].init.body as string)).toEqual({
+      email: 'ada@example.com',
+      password: 'a password',
+    })
+
+    await api.stats()
+    await api.rebuild()
+    await api.logout()
+    await api.rebuild()
+    expect(calls[1].init.headers).toEqual({}) // a read
+    expect(calls[2].init.headers).toEqual({ 'X-CSRF-Token': 'csrf-abc' })
+    expect(calls[3].init.headers).toEqual({ 'X-CSRF-Token': 'csrf-abc' }) // the logout itself
+    expect(calls[4].init.headers).toEqual({}) // forgotten after sign-out
   })
 
   it('uploads the file as multipart form data under the "file" field', async () => {
@@ -75,16 +94,21 @@ describe('api client', () => {
     await expect(api.stats()).rejects.toMatchObject({ status: 502, code: 'network_error' })
   })
 
-  it('notifies the app when a stored token is rejected, but not during sign-in', async () => {
+  it('reports a lost session to the app, but not a failed sign-in', async () => {
     const handler = vi.fn()
     setUnauthorizedHandler(handler)
     const unauthorized = () => ({
       status: 401,
-      body: { error: { code: 'unauthorized', message: 'A valid admin token is required.' } },
+      body: { error: { code: 'unauthorized', message: 'Sign in to continue.' } },
     })
-    mockApi({ 'GET /api/admin/kb/stats': unauthorized, 'GET /api/admin/session': unauthorized })
+    mockApi({
+      'GET /api/admin/kb/stats': unauthorized,
+      'GET /api/auth/me': unauthorized,
+      'POST /api/auth/login': unauthorized,
+    })
 
-    await expect(api.verifyToken('wrong')).rejects.toMatchObject({ status: 401 })
+    await expect(api.me()).rejects.toMatchObject({ status: 401 })
+    await expect(api.login('ada@example.com', 'wrong')).rejects.toMatchObject({ status: 401 })
     expect(handler).not.toHaveBeenCalled()
     await expect(api.stats()).rejects.toMatchObject({ status: 401 })
     expect(handler).toHaveBeenCalledOnce()

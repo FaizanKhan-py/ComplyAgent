@@ -1,8 +1,9 @@
-"""SQLite store for documents, chunks and their embeddings (the knowledge base)."""
+"""SQLite store: the knowledge base (documents, chunks, embeddings) and user accounts."""
 
 from __future__ import annotations
 
 import sqlite3
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -47,7 +48,31 @@ CREATE TABLE IF NOT EXISTS activity (
     detail      TEXT,
     created_at  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    email         TEXT NOT NULL UNIQUE,          -- normalised: trimmed and lower-cased
+    full_name     TEXT NOT NULL,
+    password_hash TEXT NOT NULL,                 -- Argon2id; the password itself is never stored
+    role          TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    last_login_at TEXT
+);
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash  TEXT PRIMARY KEY,                -- SHA-256 of the cookie value
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    csrf_token  TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    expires_at  INTEGER NOT NULL                 -- Unix time
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 """
+
+USER_COLUMNS = "id, email, full_name, role, created_at, last_login_at"
+
+
+class EmailTaken(Exception):
+    pass
 
 
 def now_iso() -> str:
@@ -77,6 +102,75 @@ class Database:
     def ping(self) -> None:
         with self.connect() as conn:
             conn.execute("SELECT 1").fetchone()
+
+    # --- users and sessions ----------------------------------------------------------------
+
+    def create_user(self, email: str, full_name: str, password_hash: str, role: str) -> dict:
+        now = now_iso()
+        try:
+            with self.connect() as conn:
+                conn.execute(
+                    "INSERT INTO users (email, full_name, password_hash, role, created_at, "
+                    "updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (email, full_name, password_hash, role, now, now),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise EmailTaken from exc
+        return self.get_user_by_email(email)
+
+    def get_user_by_email(self, email: str, with_hash: bool = False) -> dict | None:
+        columns = USER_COLUMNS + (", password_hash" if with_hash else "")
+        with self.connect() as conn:
+            row = conn.execute(f"SELECT {columns} FROM users WHERE email = ?", (email,)).fetchone()
+        return dict(row) if row else None
+
+    def list_users(self) -> list[dict]:
+        with self.connect() as conn:
+            rows = conn.execute(f"SELECT {USER_COLUMNS} FROM users ORDER BY id").fetchall()
+        return [dict(r) for r in rows]
+
+    def set_role(self, user_id: int, role: str) -> None:
+        """Open sessions are closed so the new role applies from the next sign-in."""
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE users SET role = ?, updated_at = ? WHERE id = ?", (role, now_iso(), user_id)
+            )
+            conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+
+    def set_password_hash(self, user_id: int, password_hash: str, end_sessions: bool) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+                (password_hash, now_iso(), user_id),
+            )
+            if end_sessions:
+                conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+
+    def create_session(self, user_id: int, token_hash: str, csrf_token: str, expires_at: int):
+        now = now_iso()
+        with self.connect() as conn:
+            conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (int(time.time()),))
+            conn.execute(
+                "INSERT INTO sessions (token_hash, user_id, csrf_token, created_at, expires_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (token_hash, user_id, csrf_token, now, expires_at),
+            )
+            conn.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (now, user_id))
+
+    def get_session(self, token_hash: str) -> dict | None:
+        """The signed-in user plus the session's CSRF token, or None if absent or expired."""
+        columns = ", ".join(f"u.{c}" for c in USER_COLUMNS.split(", "))
+        with self.connect() as conn:
+            row = conn.execute(
+                f"SELECT {columns}, s.csrf_token FROM sessions s JOIN users u ON u.id = s.user_id "
+                "WHERE s.token_hash = ? AND s.expires_at > ?",
+                (token_hash, int(time.time())),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def delete_session(self, token_hash: str) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
 
     # --- documents -------------------------------------------------------------------------
 

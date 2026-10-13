@@ -1,16 +1,21 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
-import { api, setUnauthorizedHandler, tokenStore } from './api/client'
+import { api, ApiError, setUnauthorizedHandler } from './api/client'
+import type { RegisterRequest, User } from './api/types'
 
 type AuthState =
   | { phase: 'checking' }
   | { phase: 'unreachable'; error: Error }
   | { phase: 'signed-out'; expired: boolean }
-  | { phase: 'signed-in'; authRequired: boolean }
+  | { phase: 'signed-in'; user: User }
 
 interface AuthContextValue {
   state: AuthState
-  signIn: (token: string) => Promise<void>
-  signOut: () => void
+  /** The signed-in user, or null. */
+  user: User | null
+  signIn: (email: string, password: string) => Promise<void>
+  /** Creates the account. It does not sign in: the person signs in with their new password. */
+  signUp: (body: RegisterRequest) => Promise<User>
+  signOut: () => Promise<void>
   retry: () => void
 }
 
@@ -19,49 +24,45 @@ const AuthContext = createContext<AuthContextValue | null>(null)
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({ phase: 'checking' })
 
-  // State is only set from promise callbacks, so this is safe to start from an effect.
+  // The session lives in an HttpOnly cookie, so the only way to know who is signed in (for
+  // example after a page reload) is to ask the server.
   const check = useCallback(
     () =>
-      api
-        .authStatus()
-        .then(({ auth_required }): Promise<AuthState> | AuthState => {
-          if (!auth_required) return { phase: 'signed-in', authRequired: false }
-          const stored = tokenStore.get()
-          if (!stored) return { phase: 'signed-out', expired: false }
-          return api.verifyToken(stored).then(
-            (): AuthState => ({ phase: 'signed-in', authRequired: true }),
-            (): AuthState => {
-              tokenStore.clear()
-              return { phase: 'signed-out', expired: true }
-            },
-          )
-        })
-        .then(setState, (error: unknown) =>
-          setState({
-            phase: 'unreachable',
-            error: error instanceof Error ? error : new Error('Could not reach the API'),
-          }),
-        ),
+      api.me().then(
+        (user) => setState({ phase: 'signed-in', user }),
+        (error: unknown) =>
+          setState(
+            error instanceof ApiError && error.status === 401
+              ? { phase: 'signed-out', expired: false }
+              : {
+                  phase: 'unreachable',
+                  error: error instanceof Error ? error : new Error('Could not reach the API'),
+                },
+          ),
+      ),
     [],
   )
 
   useEffect(() => {
     void check()
-    setUnauthorizedHandler(() => {
-      tokenStore.clear()
-      setState({ phase: 'signed-out', expired: true })
-    })
+    // Any later 401 means the session expired or was ended on the server.
+    setUnauthorizedHandler(() => setState({ phase: 'signed-out', expired: true }))
     return () => setUnauthorizedHandler(null)
   }, [check])
 
-  const signIn = useCallback(async (token: string) => {
-    await api.verifyToken(token)
-    tokenStore.set(token)
-    setState({ phase: 'signed-in', authRequired: true })
+  const signIn = useCallback(async (email: string, password: string) => {
+    const user = await api.login(email, password)
+    setState({ phase: 'signed-in', user })
   }, [])
 
-  const signOut = useCallback(() => {
-    tokenStore.clear()
+  const signUp = useCallback((body: RegisterRequest) => api.register(body), [])
+
+  const signOut = useCallback(async () => {
+    try {
+      await api.logout()
+    } catch {
+      /* Offline or already expired: this browser is signed out either way. */
+    }
     setState({ phase: 'signed-out', expired: false })
   }, [])
 
@@ -70,8 +71,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void check()
   }, [check])
 
+  const user = state.phase === 'signed-in' ? state.user : null
   return (
-    <AuthContext.Provider value={{ state, signIn, signOut, retry }}>
+    <AuthContext.Provider value={{ state, user, signIn, signUp, signOut, retry }}>
       {children}
     </AuthContext.Provider>
   )

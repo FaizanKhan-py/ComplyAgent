@@ -49,20 +49,15 @@ def test_public_endpoints_need_no_token_and_expose_no_detail(client):
     health = client.get("/api/health", headers={"Authorization": ""})
     assert health.status_code == 200 and set(health.json()) == {"status"}
     status = client.get("/api/auth/status", headers={"Authorization": ""})
-    assert status.json() == {"auth_required": True}
+    assert status.json() == {"auth_required": True, "registration_open": True}
     assert client.get("/api/admin/session").json() == {"ok": True}
 
 
-def test_production_refuses_to_start_without_a_token(tmp_path):
-    with pytest.raises(ValueError, match="ADMIN_API_TOKEN"):
-        Settings(storage_dir=tmp_path, app_env="production", admin_api_token="")
-
-
-def test_development_without_a_token_is_open(tmp_path):
+def test_without_a_token_or_a_session_nothing_is_open(tmp_path):
     app = create_app(Settings(storage_dir=tmp_path), embedder=HashingEmbedder(), generator=None)
     with TestClient(app) as c:
-        assert c.get("/api/auth/status").json() == {"auth_required": False}
-        assert c.get("/api/admin/documents").status_code == 200
+        assert c.get("/api/auth/status").json()["auth_required"] is True
+        assert c.get("/api/admin/documents").status_code == 401
 
 
 def test_stats_for_empty_then_populated_knowledge_base(client):

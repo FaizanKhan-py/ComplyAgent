@@ -173,7 +173,13 @@ export function KnowledgeBase() {
                 <div>
                   <dt>Answer model</dt>
                   <dd className="mono">
-                    {config.loading ? '…' : c ? (c.llm_model ?? 'Not configured (retrieval-only)') : 'Unavailable'}
+                    {config.loading
+                      ? '…'
+                      : c
+                        ? c.llm_model
+                          ? [c.llm_provider, c.llm_model].filter(Boolean).join(' · ')
+                          : 'Not configured (retrieval-only)'
+                        : 'Unavailable'}
                   </dd>
                 </div>
                 <div>

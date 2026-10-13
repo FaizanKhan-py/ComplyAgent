@@ -6,7 +6,7 @@ ComplyAgent is an AI-powered collections decision-support system. This repositor
 |---|---|---|
 | Data pipeline | `notebooks/`, `sql/`, `src/` | Builds the training table and loads it into MySQL |
 | **Admin API + RAG** | `backend/` | Ingests policy documents, indexes them, answers policy questions with sources |
-| **Admin Panel** | `frontend/` | Dashboard, document management, knowledge-base view, RAG playground |
+| **Admin Panel** | `frontend/` | Sign-in and sign-up, dashboard, document management, knowledge-base view, RAG playground |
 | Sample policies | `sample_policies/` | Three fictional policies for demos and tests |
 
 The rest of this README covers the Admin Panel and the RAG system.
@@ -15,9 +15,9 @@ The rest of this README covers the Admin Panel and the RAG system.
 
 ```
 Browser ── React admin panel (Vite, TypeScript)
-              │  /api/*  (Bearer admin token)
+              │  /api/*  (session cookie + CSRF token)
               ▼
-        FastAPI backend ──► SQLite knowledge base   documents, chunks, embeddings, activity log
+        FastAPI backend ──► SQLite database         users, sessions, documents, chunks, embeddings, activity log
               │         ──► storage/uploads/        original files, named by document ID
               ├──► Embeddings: BAAI/bge-small-en-v1.5, run locally with fastembed (no API key)
               └──► Answers:    Claude (Anthropic API) or a local Ollama model, optional
@@ -29,6 +29,7 @@ Browser ── React admin panel (Vite, TypeScript)
 | Knowledge base | One SQLite file; vectors stored as blobs, cosine search with NumPy | Zero setup, and exact search is instant at policy-corpus size (thousands of chunks). No separate vector database to run |
 | Embeddings | `fastembed` running `BAAI/bge-small-en-v1.5` locally | Semantic search with no API key and no cost. The model (about 70 MB) is downloaded once |
 | Answer model | Claude `claude-opus-5-5` through the `anthropic` SDK, or a local model through Ollama | Optional. With neither configured the system runs in retrieval-only mode |
+| Accounts | Email and password; Argon2id hashes; server-side sessions in an HttpOnly cookie; roles `user` and `admin` | No separate identity service to run. See "Accounts and access" |
 | Frontend | React 19, TypeScript, Vite, React Router, plain CSS | No UI framework dependency |
 
 The knowledge base is separate from the team's MySQL database, which is not required to run this part.
@@ -51,6 +52,13 @@ uvicorn app.main:app --reload --port 8000
 The first start downloads the embedding model, so it needs internet access once.
 Interactive API docs are at http://localhost:8000/docs.
 
+**Create the first administrator** (once, in the same `backend` directory and virtualenv). It
+asks for a password without showing it:
+
+```bash
+python -m app.manage create-admin --email you@example.com --name "Your Name"
+```
+
 **2. Frontend** (terminal 2)
 
 ```bash
@@ -59,8 +67,69 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173. The dev server forwards `/api` to `http://127.0.0.1:8000`
-(override with `VITE_DEV_BACKEND=http://host:port npm run dev`).
+Open http://localhost:5173 and sign in with the administrator account. Other people can use
+**Create an account** on the sign-in page; they get an ordinary account (see "Accounts and
+access"). The dev server forwards `/api` to `http://127.0.0.1:8000` (override with
+`VITE_DEV_BACKEND=http://host:port npm run dev`).
+
+## Accounts and access
+
+Everything except the sign-in and sign-up pages needs an account. There is no open or
+"development" mode: without a valid session the API answers 401.
+
+| Role | How you get it | Can do |
+|---|---|---|
+| `user` | Sign up on the web page | Use the RAG Playground: ask questions, see answers and sources |
+| `admin` | Created or promoted from the server command line only | Everything: dashboard, upload/delete/reindex documents, knowledge base, health, playground |
+
+Sign-up always creates a `user`. The request has no role field, and the server ignores any
+extra fields, so nobody can register as an administrator. Roles are checked by the API on every
+request; the panel hiding a page is only a convenience.
+
+Account administration is done on the server, by someone who can already run commands there:
+
+```bash
+# from backend/, with the virtualenv active
+python -m app.manage create-admin --email you@example.com --name "Your Name"
+python -m app.manage set-role --email someone@example.com --role admin    # or --role user
+python -m app.manage reset-password --email someone@example.com
+python -m app.manage list-users
+```
+
+`set-role` and `reset-password` also end that person's open sessions.
+
+How it works:
+
+- **Passwords** are hashed with Argon2id (`argon2-cffi`) and never stored or logged. They must
+  be 8 to 128 characters. Emails are validated and lower-cased, so `Ada@Example.com` and
+  `ada@example.com` are one account.
+- **Sessions.** Signing in creates a random session token. The browser gets it in a cookie that
+  is `HttpOnly` (scripts cannot read it), `SameSite=Lax`, and `Secure` in production. The
+  database stores only a SHA-256 hash of the token. Sessions last `SESSION_TTL_HOURS` (12 by
+  default). Signing out deletes the session on the server, so a copied cookie stops working.
+- **Page reloads.** Nothing is kept in `localStorage` or `sessionStorage`. On load the panel
+  asks `GET /api/auth/me`, which answers from the cookie.
+- **CSRF.** Every state-changing request made with the cookie must carry the session's CSRF
+  token in the `X-CSRF-Token` header (the panel gets it from sign-in and `/api/auth/me` and
+  keeps it in memory). Requests whose `Origin` is not this site or in `CORS_ORIGINS` are refused.
+- **Brute force.** After `LOGIN_MAX_ATTEMPTS` failed sign-ins for one email from one client
+  within `LOGIN_WINDOW_MINUTES`, further attempts get HTTP 429 until the window passes. Sign-up
+  is limited to `REGISTER_MAX_PER_HOUR` per client.
+- **No account probing at sign-in.** A wrong password and an unknown email get the same message
+  and take the same time. Sign-up does say when an email is already registered, because the
+  form has to; that endpoint is rate limited.
+- **Expired sessions.** Any 401 from the API returns the panel to the sign-in page with a
+  "Your session ended" message.
+
+Not included, and what each would need:
+
+- **Email verification.** The project has no way to send email. It would need an SMTP or
+  email-API setting, an `email_verified_at` column, a signed single-use token, and a
+  `/api/auth/verify` route. Until then, set `ALLOW_REGISTRATION=false` if only invited people
+  should have accounts.
+- **Forgot password by email.** Same missing piece. For now an administrator runs
+  `reset-password` and gives the person the new password; the sign-in page says so.
+- **Managing users in the panel.** Roles are changed from the command line only.
 
 ## Configuration
 
@@ -69,9 +138,14 @@ git-ignored; `backend/.env.example` documents every variable.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `APP_ENV` | `development` | With `production` the server refuses to start unless `ADMIN_API_TOKEN` is set |
-| `ADMIN_API_TOKEN` | empty | Bearer token required on every `/api/admin/*` request. Empty means open access, for local development only |
-| `CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Browser origins allowed to call the API |
+| `APP_ENV` | `development` | `production` forces the session cookie to be `Secure` (HTTPS only) |
+| `ALLOW_REGISTRATION` | `true` | `false` closes public sign-up |
+| `SESSION_TTL_HOURS` | `12` | How long a sign-in lasts |
+| `COOKIE_SECURE` | empty | Send the cookie over HTTPS only. Empty: on in production, off in development |
+| `LOGIN_MAX_ATTEMPTS` / `LOGIN_WINDOW_MINUTES` | `5` / `15` | Failed sign-ins per email and client before a temporary lock-out |
+| `REGISTER_MAX_PER_HOUR` | `10` | Sign-ups per client per hour |
+| `ADMIN_API_TOKEN` | empty | Optional credential for scripts: `Authorization: Bearer <token>` gets administrator access without a session. Empty turns it off. At least 16 characters |
+| `CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Browser origins allowed to call the API and send the session cookie |
 | `STORAGE_DIR` | `backend/storage` | SQLite file, uploaded files, embedding model cache |
 | `MAX_UPLOAD_MB` | `20` | Upload size limit |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `500` / `80` | Chunk length and overlap, in characters |
@@ -83,17 +157,64 @@ git-ignored; `backend/.env.example` documents every variable.
 | `ANTHROPIC_API_KEY` | empty | Key for generated answers |
 | `ANTHROPIC_MODEL` | `claude-opus-5-5` | Answer model |
 | `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama server, used when `LLM_PROVIDER=ollama` |
-| `OLLAMA_MODEL` | `llama3.2` | Ollama answer model. Pull it first with `ollama pull llama3.2` |
+| `OLLAMA_MODEL` | `llama3.2` | Ollama chat model. Pull it first with `ollama pull llama3.2` |
+| `OLLAMA_NUM_CTX` | empty | Context window in tokens. Empty uses Ollama's default (4096) |
 | `LLM_TIMEOUT_SECONDS` | `60` | Per-request timeout |
 
-To generate answers locally with no API key, install [Ollama](https://ollama.com), run
-`ollama pull llama3.2`, and set `LLM_PROVIDER=ollama`. A small local model is slower and less
-precise with citations than Claude, so raise `LLM_TIMEOUT_SECONDS` on a machine without a GPU.
-
-Generate an admin token with `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+No setting holds a password or session secret: accounts live in the database. If you use
+`ADMIN_API_TOKEN`, generate it with `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 
 The frontend has one optional variable, `VITE_API_BASE_URL` (see `frontend/.env.example`), for
 when the built frontend is hosted on a different origin from the API.
+
+## Local answers with Ollama
+
+Ollama generates the written answers on your own machine: no API key, no cost, and no document
+text leaves the machine. Embeddings do **not** use Ollama; they stay on `fastembed`
+(`BAAI/bge-small-en-v1.5`, 384 dimensions) for both documents and questions, so switching the
+answer model never requires re-indexing.
+
+1. Install Ollama from https://ollama.com/download and start it. It listens on
+   `http://127.0.0.1:11434`. Check with `ollama --version` and `ollama list`.
+2. Pull a chat model (about 2 GB for the default):
+
+   ```bash
+   ollama pull llama3.2
+   ```
+
+3. In `backend/.env` set:
+
+   ```
+   LLM_PROVIDER=ollama
+   OLLAMA_BASE_URL=http://127.0.0.1:11434
+   OLLAMA_MODEL=llama3.2
+   LLM_TIMEOUT_SECONDS=120
+   ```
+
+4. Restart the backend. The startup log prints `Answer model: llama3.2 (Ollama) is available`,
+   and the same line appears under **Answer model (LLM)** on the Dashboard and Knowledge Base
+   pages.
+
+`OLLAMA_MODEL` must be a chat model. Embedding-only models such as `nomic-embed-text` are
+rejected with a clear message. The first question after Ollama starts is slower while the model
+loads; without a GPU, keep `LLM_TIMEOUT_SECONDS` at 120 or more.
+
+If Ollama is stopped, the model is not pulled, or a request fails, nothing breaks: queries
+return the retrieved passages with a warning that says why, and the health panel and the
+playground show the actual error. Typical messages:
+
+| Message | Fix |
+|---|---|
+| `Ollama is not reachable at http://127.0.0.1:11434. Is it running?` | Start Ollama, or correct `OLLAMA_BASE_URL` |
+| `Ollama is running but 'llama3.2' is not pulled. Run: ollama pull llama3.2` | Pull the model, or set `OLLAMA_MODEL` to one from `ollama list` |
+| `'nomic-embed-text' is not a chat model` | Set `OLLAMA_MODEL` to a chat model |
+| `Ollama timed out.` | Raise `LLM_TIMEOUT_SECONDS`, or use a smaller model |
+
+With Ollama the model returns its answer as separate statements, each with the sources that
+support it, and the backend adds the `[n]` markers. Small local models are less reliable than
+Claude: they tend to copy sentences from the passages, and can occasionally mislabel an answer
+as insufficient evidence. The retrieved sources shown under every answer are always the real
+retrieved chunks.
 
 If you change the embedding model, chunks made with the old model stop being searched and the
 Knowledge Base page reports them as stale. Use **Rebuild index** to re-embed everything.
@@ -143,29 +264,36 @@ and the system prompt tells it to treat that text as evidence, not as instructio
 
 ## API
 
-Every `/api/admin/*` route requires `Authorization: Bearer <ADMIN_API_TOKEN>` when a token is
-configured. Errors always have the shape `{"error": {"code": "...", "message": "..."}}`.
+Access is one of: **public**, **user** (any signed-in account), or **admin**. Without a valid
+session the private routes answer 401; an ordinary user on an admin route gets 403. Scripts can
+instead send `Authorization: Bearer <ADMIN_API_TOKEN>` if that token is configured. Errors
+always have the shape `{"error": {"code": "...", "message": "..."}}`.
 
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/api/health` | Public liveness: overall status only |
-| GET | `/api/auth/status` | Public: whether a token is required |
-| GET | `/api/admin/session` | Check a token |
-| GET | `/api/admin/health` | Status of the store, file storage, embedding model and LLM |
-| GET | `/api/admin/config` | Limits, models and retrieval defaults (no secrets) |
-| GET | `/api/admin/documents` | List documents with status and metadata |
-| POST | `/api/admin/documents` | Upload (multipart field `file`); returns 202 |
-| GET | `/api/admin/documents/{id}` | One document |
-| DELETE | `/api/admin/documents/{id}` | Delete the document, its file and its chunks |
-| POST | `/api/admin/documents/{id}/reindex` | Re-run ingestion from the stored file |
-| GET | `/api/admin/activity?limit=20` | Recent uploads, indexing results, deletions |
-| GET | `/api/admin/kb/stats` | Document and chunk counts, knowledge-base status |
-| POST | `/api/admin/kb/rebuild` | Reindex every document |
-| POST | `/api/admin/rag/query` | Ask a question: `{question, history?, top_k?, min_score?, document_ids?}` |
+| Method | Path | Access | Purpose |
+|---|---|---|---|
+| GET | `/api/health` | public | Liveness: overall status only |
+| GET | `/api/auth/status` | public | Whether sign-up is open |
+| POST | `/api/auth/register` | public | Create an ordinary account: `{full_name, email, password}`. 409 if the email is taken |
+| POST | `/api/auth/login` | public | `{email, password}`. Sets the session cookie; returns the user and the CSRF token |
+| GET | `/api/auth/me` | user | The signed-in user and the CSRF token |
+| POST | `/api/auth/logout` | user | Ends the session on the server and clears the cookie |
+| GET | `/api/admin/session` | admin | Check an API token or an administrator session |
+| GET | `/api/admin/health` | admin | Live status of the store, file storage, embedding model and LLM (for Ollama: reachable and model pulled) |
+| GET | `/api/admin/config` | user | Limits, answer provider and model, retrieval defaults (no secrets) |
+| GET | `/api/admin/documents` | admin | List documents with status and metadata |
+| POST | `/api/admin/documents` | admin | Upload (multipart field `file`); returns 202 |
+| GET | `/api/admin/documents/{id}` | admin | One document |
+| DELETE | `/api/admin/documents/{id}` | admin | Delete the document, its file and its chunks |
+| POST | `/api/admin/documents/{id}/reindex` | admin | Re-run ingestion from the stored file |
+| GET | `/api/admin/activity?limit=20` | admin | Recent uploads, indexing results, deletions |
+| GET | `/api/admin/kb/stats` | admin | Document and chunk counts, knowledge-base status |
+| POST | `/api/admin/kb/rebuild` | admin | Reindex every document |
+| POST | `/api/admin/rag/query` | user | Ask a question: `{question, history?, top_k?, min_score?, document_ids?}` |
 
 ## Demo script
 
-1. Start both servers and open http://localhost:5173. If you set `ADMIN_API_TOKEN`, sign in with it.
+1. Start both servers, create an administrator (see "Quick start"), open http://localhost:5173
+   and sign in.
 2. **Dashboard**: everything is zero and the knowledge base is "Empty".
 3. **Documents**: upload the three files in `sample_policies/`. Each moves from Queued to Indexed
    with its chunk count; the PDF shows 2 pages.
@@ -187,12 +315,12 @@ citations. Without it, the panel says so and shows the retrieved passages only.
 
 ```bash
 # Backend (from backend/, with the virtualenv active)
-pytest                   # 80 tests, no network: keyword embedder + scripted LLM
+pytest                   # 138 tests, no network: keyword embedder + scripted LLM
 pytest -m integration    # 6 tests using the real embedding model
 ruff check .
 
 # Frontend (from frontend/)
-npm test                 # 24 tests: API client contract and all pages, fetch mocked
+npm test                 # 34 tests: API client contract, sign-in/sign-up and all pages, fetch mocked
 npm run lint
 npm run build            # type-check + production build into dist/
 ```
@@ -204,16 +332,23 @@ that needs a key.
 
 ## Security notes
 
-- Set `ADMIN_API_TOKEN` and `APP_ENV=production` for anything that is not your own laptop, and
-  serve it over HTTPS. The token is a single shared admin credential: there are no user
-  accounts or roles yet.
-- The panel keeps the token in `sessionStorage`, so it is cleared when the tab closes.
+- Set `APP_ENV=production` and serve over HTTPS for anything that is not your own laptop, so
+  the session cookie is only ever sent encrypted.
+- Sign-in, sessions, roles, CSRF and rate limiting are described in "Accounts and access".
+- Leave `ADMIN_API_TOKEN` empty unless a script needs it. It is a shared administrator
+  credential with no expiry.
+- Host the panel and the API on the same site (the same origin, or sub-domains of one domain).
+  The session cookie is `SameSite=Lax` and is not sent between unrelated sites.
 - Uploaded files are stored under their document ID, never under a user-supplied name.
 - Logs record document IDs, sizes and counts, not document text or questions.
 
 ## Known limitations
 
 - No OCR, and no DOCX support.
+- No email verification or self-service password reset, because nothing here sends email.
+- Rate limits are counted in memory by client address. They reset when the server restarts,
+  are not shared between several server processes, and behind a reverse proxy every visitor
+  has the proxy's address, so the per-email limit is the one that matters there.
 - Ingestion runs in the API process. That is fine for policy documents; a very large batch
   would want a job queue.
 - Search loads all vectors into memory for each query. Beyond a few hundred thousand chunks,

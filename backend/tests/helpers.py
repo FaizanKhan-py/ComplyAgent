@@ -48,6 +48,7 @@ def make_pdf(pages: list[str]) -> bytes:
 class FakeGenerator:
     """Stands in for the Claude client. Records what it was asked and returns a scripted answer."""
 
+    provider = "fake"
     model = "fake-llm"
 
     def __init__(self) -> None:

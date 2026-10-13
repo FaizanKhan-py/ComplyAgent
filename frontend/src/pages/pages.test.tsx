@@ -1,9 +1,6 @@
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import App from '../App'
-import { tokenStore } from '../api/client'
-import { AuthProvider } from '../auth'
 import { answer, config, doc, health, mockApi, stats } from '../test/fixtures'
 import { Dashboard } from './Dashboard'
 import { Documents } from './Documents'
@@ -180,7 +177,7 @@ describe('Knowledge Base', () => {
     expect(within(section).getByText('14')).toBeInTheDocument()
     expect(screen.getByText('500 characters, 80 overlap')).toBeInTheDocument()
     expect(screen.getByText('2 PDF · 1 TXT')).toBeInTheDocument()
-    expect(await screen.findByText('claude-opus-5-5')).toBeInTheDocument()
+    expect(await screen.findByText('anthropic · claude-opus-5-5')).toBeInTheDocument()
     expect(await screen.findByText('Upload storage is writable')).toBeInTheDocument()
   })
 
@@ -211,6 +208,16 @@ describe('Knowledge Base', () => {
     await user.click(screen.getAllByRole('button', { name: 'Rebuild index', hidden: true })[1])
     expect(await screen.findByText('Rebuild started for 3 documents.')).toBeInTheDocument()
     expect(api.count('POST /api/admin/kb/rebuild')).toBe(1)
+  })
+
+  it('names the answer model and its provider as the backend reports them', async () => {
+    mockApi({
+      'GET /api/admin/kb/stats': () => ({ body: stats() }),
+      'GET /api/admin/health': () => ({ body: health }),
+      'GET /api/admin/config': () => ({ body: { ...config, llm_provider: 'ollama', llm_model: 'llama3.2' } }),
+    })
+    page(<KnowledgeBase />)
+    expect(await screen.findByText('ollama · llama3.2')).toBeInTheDocument()
   })
 })
 
@@ -295,6 +302,19 @@ describe('RAG Playground', () => {
     expect(screen.queryByText('Cited')).not.toBeInTheDocument()
   })
 
+  it('warns when the configured answer model is down, using the live health detail', async () => {
+    const detail = 'Ollama is not reachable at http://127.0.0.1:11434. Is it running?'
+    mockApi({
+      'GET /api/admin/config': () => ({ body: { ...config, llm_provider: 'ollama', llm_model: 'llama3.2' } }),
+      'GET /api/admin/health': () => ({
+        body: { ...health, components: { ...health.components, llm: { status: 'error', detail } } },
+      }),
+    })
+    page(<Playground />)
+    expect(await screen.findByText(detail, { exact: false })).toBeInTheDocument()
+    expect(screen.queryByText(/No answer model is configured/)).not.toBeInTheDocument()
+  })
+
   it('shows request failures and lets the user retry', async () => {
     const user = userEvent.setup()
     let attempt = 0
@@ -310,64 +330,5 @@ describe('RAG Playground', () => {
     expect(await screen.findByText('Embedding model could not be loaded.')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Retry' }))
     expect(await screen.findByText('Generated answer')).toBeInTheDocument()
-  })
-})
-
-describe('Sign-in', () => {
-  const app = () =>
-    render(
-      <MemoryRouter>
-        <AuthProvider>
-          <App />
-        </AuthProvider>
-      </MemoryRouter>,
-    )
-  const dashboardRoutes = {
-    'GET /api/admin/kb/stats': () => ({ body: stats() }),
-    'GET /api/admin/activity?limit=8': () => ({ body: { events: [] } }),
-    'GET /api/admin/health': () => ({ body: health }),
-  }
-
-  it('requires the admin token, rejects a wrong one and signs in with the right one', async () => {
-    const user = userEvent.setup()
-    const api = mockApi({
-      'GET /api/auth/status': () => ({ body: { auth_required: true } }),
-      'GET /api/admin/session': (init) =>
-        (init.headers as Record<string, string>).Authorization === 'Bearer right'
-          ? { body: { ok: true } }
-          : failure(401, 'unauthorized', 'A valid admin token is required.')(),
-      ...dashboardRoutes,
-    })
-    app()
-
-    const field = await screen.findByLabelText('Admin token')
-    expect(api.count('GET /api/admin/kb/stats')).toBe(0) // nothing is fetched before sign-in
-    await user.type(field, 'wrong{Enter}')
-    expect(await screen.findByText('That token was not accepted.')).toBeInTheDocument()
-    expect(tokenStore.get()).toBeNull()
-
-    await user.clear(field)
-    await user.type(field, 'right{Enter}')
-    expect(await screen.findByRole('heading', { name: 'Dashboard' })).toBeInTheDocument()
-    expect(tokenStore.get()).toBe('right')
-    for (const link of ['Dashboard', 'Documents', 'Knowledge Base', 'RAG Playground']) {
-      expect(screen.getByRole('link', { name: link })).toBeInTheDocument()
-    }
-
-    await user.click(screen.getByRole('button', { name: 'Sign out' }))
-    expect(await screen.findByLabelText('Admin token')).toBeInTheDocument()
-    expect(tokenStore.get()).toBeNull()
-  })
-
-  it('goes straight in when the server does not require a token, and reports an unreachable API', async () => {
-    mockApi({ 'GET /api/auth/status': () => ({ body: { auth_required: false } }), ...dashboardRoutes })
-    const first = app()
-    expect(await screen.findByRole('heading', { name: 'Dashboard' })).toBeInTheDocument()
-    expect(screen.getByText('Open access (dev mode)')).toBeInTheDocument()
-    first.unmount()
-
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
-    app()
-    expect(await screen.findByText(/Cannot reach the ComplyAgent API/)).toBeInTheDocument()
   })
 })

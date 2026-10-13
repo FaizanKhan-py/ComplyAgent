@@ -10,7 +10,7 @@ from app.config import BACKEND_DIR, Settings
 from app.embeddings import FastEmbedEmbedder
 from app.main import create_app
 
-from .conftest import SAMPLES, upload
+from .conftest import AUTH, SAMPLES, TOKEN, upload
 
 pytestmark = pytest.mark.integration
 
@@ -22,8 +22,9 @@ def embedder():
 
 @pytest.fixture
 def client(tmp_path, embedder):
-    app = create_app(Settings(storage_dir=tmp_path), embedder=embedder, generator=None)
-    with TestClient(app) as c:
+    settings = Settings(storage_dir=tmp_path, admin_api_token=TOKEN)
+    app = create_app(settings, embedder=embedder, generator=None)
+    with TestClient(app, headers=AUTH) as c:
         for path in sorted(SAMPLES.glob("*_policy.*")):
             assert upload(c, path.name, path.read_bytes()).status_code == 202
         yield c

@@ -17,6 +17,22 @@ def _int(name: str, default: int) -> int:
     return int(raw) if raw else default
 
 
+def _bool(name: str, default: bool | None) -> bool | None:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    raise ValueError(f"{name} must be true or false")
+
+
+def _opt_int(name: str) -> int | None:
+    raw = os.getenv(name, "").strip()
+    return int(raw) if raw else None
+
+
 def _opt_float(name: str) -> float | None:
     raw = os.getenv(name, "").strip()
     return float(raw) if raw else None
@@ -41,23 +57,44 @@ class Settings:
     anthropic_model: str = "claude-opus-5-5"
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "llama3.2"
+    ollama_num_ctx: int | None = None  # None: Ollama's own default context window
     llm_timeout_seconds: float = 60.0
+    allow_registration: bool = True
+    session_ttl_hours: int = 12
+    cookie_secure: bool | None = None  # None: on in production, off in development
+    login_max_attempts: int = 5  # failed sign-ins per email and client before a lock-out
+    login_window_minutes: int = 15
+    register_max_per_hour: int = 10  # sign-ups per client
 
     def __post_init__(self) -> None:
         if self.chunk_size < 100:
             raise ValueError("CHUNK_SIZE must be at least 100 characters")
         if not 0 <= self.chunk_overlap < self.chunk_size // 2:
             raise ValueError("CHUNK_OVERLAP must be >= 0 and less than half of CHUNK_SIZE")
-        if self.is_production and not self.admin_api_token:
-            raise ValueError("ADMIN_API_TOKEN must be set when APP_ENV=production")
+        if not self.ollama_base_url.startswith(("http://", "https://")):
+            raise ValueError("OLLAMA_BASE_URL must start with http:// or https://")
+        if self.ollama_num_ctx is not None and self.ollama_num_ctx < 1024:
+            raise ValueError("OLLAMA_NUM_CTX must be at least 1024 tokens")
+        if self.admin_api_token and len(self.admin_api_token) < 16:
+            raise ValueError("ADMIN_API_TOKEN must be at least 16 characters, or empty")
+        if self.session_ttl_hours < 1:
+            raise ValueError("SESSION_TTL_HOURS must be at least 1")
+        if min(self.login_max_attempts, self.login_window_minutes, self.register_max_per_hour) < 1:
+            raise ValueError("The sign-in and sign-up limits must be at least 1")
+        if self.is_production and self.cookie_secure is False:
+            raise ValueError("COOKIE_SECURE cannot be false when APP_ENV=production")
 
     @property
     def is_production(self) -> bool:
         return self.app_env.lower() == "production"
 
     @property
-    def auth_required(self) -> bool:
-        return bool(self.admin_api_token)
+    def secure_cookies(self) -> bool:
+        return self.is_production if self.cookie_secure is None else self.cookie_secure
+
+    @property
+    def session_ttl_seconds(self) -> int:
+        return self.session_ttl_hours * 3600
 
     @property
     def max_upload_bytes(self) -> int:
@@ -98,6 +135,13 @@ class Settings:
             anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-opus-5-5").strip(),
             ollama_base_url=(os.getenv("OLLAMA_BASE_URL", "").strip() or "http://127.0.0.1:11434"),
             ollama_model=os.getenv("OLLAMA_MODEL", "").strip() or "llama3.2",
+            ollama_num_ctx=_opt_int("OLLAMA_NUM_CTX"),
             llm_timeout_seconds=float(_int("LLM_TIMEOUT_SECONDS", 60)),
+            allow_registration=bool(_bool("ALLOW_REGISTRATION", True)),
+            session_ttl_hours=_int("SESSION_TTL_HOURS", 12),
+            cookie_secure=_bool("COOKIE_SECURE", None),
+            login_max_attempts=_int("LOGIN_MAX_ATTEMPTS", 5),
+            login_window_minutes=_int("LOGIN_WINDOW_MINUTES", 15),
+            register_max_per_hour=_int("REGISTER_MAX_PER_HOUR", 10),
             **kwargs,
         )
