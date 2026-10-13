@@ -1,0 +1,156 @@
+"""Request and response models for the HTTP API."""
+
+from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import BaseModel, Field, field_validator
+
+DocumentStatus = Literal["pending", "processing", "indexed", "failed"]
+ComponentStatus = Literal["ok", "degraded", "error"]
+
+
+class ErrorBody(BaseModel):
+    code: str
+    message: str
+
+
+class ErrorResponse(BaseModel):
+    error: ErrorBody
+
+
+class Document(BaseModel):
+    id: str
+    filename: str
+    file_type: str
+    size_bytes: int
+    status: DocumentStatus
+    error: str | None = None
+    page_count: int | None = None
+    char_count: int | None = None
+    chunk_count: int
+    embedding_model: str | None = None
+    uploaded_at: str
+    updated_at: str
+    indexed_at: str | None = None
+
+
+class DocumentList(BaseModel):
+    documents: list[Document]
+
+
+class DeleteResult(BaseModel):
+    id: str
+    deleted: bool
+    chunks_removed: int
+
+
+class RebuildResult(BaseModel):
+    queued: int
+
+
+class ActivityEvent(BaseModel):
+    id: int
+    document_id: str
+    filename: str
+    event: Literal["uploaded", "indexed", "failed", "reindex", "deleted"]
+    detail: str | None = None
+    created_at: str
+
+
+class ActivityList(BaseModel):
+    events: list[ActivityEvent]
+
+
+class KnowledgeBaseStats(BaseModel):
+    status: Literal["empty", "processing", "ready", "degraded", "unavailable"]
+    total_documents: int
+    by_status: dict[str, int]
+    by_file_type: dict[str, int]
+    total_size_bytes: int
+    indexed_characters: int
+    total_chunks: int
+    searchable_chunks: int
+    stale_documents: int
+    last_indexed_at: str | None
+    embedding_model: str
+    chunk_size: int
+    chunk_overlap: int
+
+
+class Component(BaseModel):
+    status: ComponentStatus
+    detail: str
+
+
+class Health(BaseModel):
+    status: ComponentStatus
+    components: dict[str, Component]
+
+
+class PublicHealth(BaseModel):
+    status: ComponentStatus
+
+
+class AuthStatus(BaseModel):
+    auth_required: bool
+
+
+class AdminConfig(BaseModel):
+    supported_extensions: list[str]
+    max_upload_mb: int
+    chunk_size: int
+    chunk_overlap: int
+    embedding_model: str
+    llm_model: str | None
+    default_top_k: int
+    default_min_score: float
+
+
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=8000)
+
+
+class QueryRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+    history: list[ChatMessage] = Field(default_factory=list, max_length=20)
+    top_k: int | None = Field(default=None, ge=1, le=20)
+    min_score: float | None = Field(default=None, ge=0, le=1)
+    document_ids: list[str] | None = Field(default=None, max_length=100)
+
+    @field_validator("question")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("question must not be blank")
+        return value.strip()
+
+
+class Source(BaseModel):
+    rank: int
+    document_id: str
+    filename: str
+    file_type: str
+    page_number: int | None
+    chunk_index: int
+    score: float
+    text: str
+    cited: bool
+
+
+class RetrievalInfo(BaseModel):
+    top_k: int
+    min_score: float
+    embedding_model: str
+    chunks_searched: int
+
+
+class QueryResponse(BaseModel):
+    answer: str
+    answer_mode: Literal["generated", "retrieval_only", "no_evidence"]
+    insufficient_evidence: bool
+    sources: list[Source]
+    model: str | None
+    warning: str | None
+    retrieval: RetrievalInfo

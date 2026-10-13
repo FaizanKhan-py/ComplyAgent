@@ -1,0 +1,9 @@
+# ComplyAgent backend (Admin API + RAG). Tested on Python 3.12.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+python-dotenv>=1.0
+pypdf>=5.0
+numpy>=1.26
+fastembed>=0.5
+anthropic>=1.0

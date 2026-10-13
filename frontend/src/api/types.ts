@@ -1,0 +1,115 @@
+// Mirrors backend/app/schemas.py. Keep the two in sync.
+
+export type DocumentStatus = 'pending' | 'processing' | 'indexed' | 'failed'
+export type ComponentStatus = 'ok' | 'degraded' | 'error'
+export type KnowledgeBaseStatus = 'empty' | 'processing' | 'ready' | 'degraded' | 'unavailable'
+
+export interface PolicyDocument {
+  id: string
+  filename: string
+  file_type: string
+  size_bytes: number
+  status: DocumentStatus
+  error: string | null
+  page_count: number | null
+  char_count: number | null
+  chunk_count: number
+  embedding_model: string | null
+  uploaded_at: string
+  updated_at: string
+  indexed_at: string | null
+}
+
+export interface ActivityEvent {
+  id: number
+  document_id: string
+  filename: string
+  event: 'uploaded' | 'indexed' | 'failed' | 'reindex' | 'deleted'
+  detail: string | null
+  created_at: string
+}
+
+export interface KnowledgeBaseStats {
+  status: KnowledgeBaseStatus
+  total_documents: number
+  by_status: Record<DocumentStatus, number>
+  by_file_type: Record<string, number>
+  total_size_bytes: number
+  indexed_characters: number
+  total_chunks: number
+  searchable_chunks: number
+  stale_documents: number
+  last_indexed_at: string | null
+  embedding_model: string
+  chunk_size: number
+  chunk_overlap: number
+}
+
+export interface HealthComponent {
+  status: ComponentStatus
+  detail: string
+}
+
+export interface Health {
+  status: ComponentStatus
+  components: Record<string, HealthComponent>
+}
+
+export interface AdminConfig {
+  supported_extensions: string[]
+  max_upload_mb: number
+  chunk_size: number
+  chunk_overlap: number
+  embedding_model: string
+  llm_model: string | null
+  default_top_k: number
+  default_min_score: number
+}
+
+export interface ChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface QueryRequest {
+  question: string
+  history?: ChatMessage[]
+  top_k?: number
+  min_score?: number
+  document_ids?: string[]
+}
+
+export interface Source {
+  rank: number
+  document_id: string
+  filename: string
+  file_type: string
+  page_number: number | null
+  chunk_index: number
+  score: number
+  text: string
+  cited: boolean
+}
+
+export type AnswerMode = 'generated' | 'retrieval_only' | 'no_evidence'
+
+export interface QueryResponse {
+  answer: string
+  answer_mode: AnswerMode
+  insufficient_evidence: boolean
+  sources: Source[]
+  model: string | null
+  warning: string | null
+  retrieval: {
+    top_k: number
+    min_score: number
+    embedding_model: string
+    chunks_searched: number
+  }
+}
+
+export interface DeleteResult {
+  id: string
+  deleted: boolean
+  chunks_removed: number
+}
