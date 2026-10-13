@@ -142,3 +142,89 @@ export interface RegisterRequest {
   email: string
   password: string
 }
+
+export type RiskLevel = 'low' | 'medium' | 'high'
+
+export interface ModelScores {
+  customers: number
+  accuracy: number
+  precision: number
+  recall: number
+  f1: number
+  roc_auc: number
+  tn: number
+  fp: number
+  fn: number
+  tp: number
+}
+
+export interface RiskModel {
+  model_name: string
+  trained_at: string
+  features: string[]
+  metrics: { threshold: number; validation: ModelScores; test: ModelScores }
+}
+
+export interface PortfolioSummary {
+  loaded: boolean
+  imported_at: string | null
+  customers: number
+  total_credit_limit: number
+  latest_billed: number
+  latest_late_rate: number | null
+  actual_defaults: number
+  model: RiskModel | null
+  by_risk: { risk_level: RiskLevel; customers: number; default_rate: number | null }[]
+  by_month: { month: string; customers: number; late_rate: number; billed: number; paid: number }[]
+  by_education: { education: string; customers: number; default_rate: number }[]
+}
+
+export interface CustomerSummary {
+  customer_id: number
+  limit_bal: number
+  age: number
+  sex: string
+  education: string
+  marriage: string
+  latest_status: number | null
+  latest_bill: number | null
+  default_probability: number | null
+  predicted_default: boolean | null
+  risk_level: RiskLevel | null
+  actual_default: boolean
+  data_split: 'train' | 'validation' | 'test' | null
+}
+
+export interface CustomerList {
+  customers: CustomerSummary[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export type CustomerSort = 'id' | 'probability' | 'limit_bal' | 'latest_status'
+
+export interface CustomerQuery {
+  search?: string
+  risk?: RiskLevel
+  actual?: 'defaulted' | 'paid'
+  sort?: CustomerSort
+  order?: 'asc' | 'desc'
+  page?: number
+  page_size?: number
+}
+
+export interface MonthlyRecord {
+  month_no: number
+  month: string
+  repayment_status: number
+  bill_amt: number
+  pay_amt: number
+}
+
+export interface CustomerDetail extends CustomerSummary {
+  on_time_payment_rate: number | null
+  avg_payment_delay: number | null
+  avg_credit_utilization: number | null
+  history: MonthlyRecord[]
+}

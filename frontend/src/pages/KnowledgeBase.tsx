@@ -4,6 +4,7 @@ import { api } from '../api/client'
 import type { KnowledgeBaseStats } from '../api/types'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { HealthList } from '../components/HealthList'
+import { RecentActivity } from '../components/RecentActivity'
 import {
   ErrorState,
   Loading,
@@ -21,7 +22,7 @@ function statusNotice(stats: KnowledgeBaseStats) {
     case 'empty':
       return (
         <Notice tone="info">
-          The knowledge base is empty. <Link to="/documents">Upload a policy document</Link> to get
+          The knowledge base is empty. <Link to="/assistant/documents">Upload a policy document</Link> to get
           started.
         </Notice>
       )
@@ -205,6 +206,8 @@ export function KnowledgeBase() {
           </div>
         </>
       ) : null}
+
+      <RecentActivity />
 
       <ConfirmDialog
         open={confirming}

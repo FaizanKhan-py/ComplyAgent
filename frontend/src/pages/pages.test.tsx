@@ -1,11 +1,13 @@
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
-import { answer, config, doc, health, mockApi, stats } from '../test/fixtures'
-import { Dashboard } from './Dashboard'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { answer, config, customer, customerDetail, doc, health, mockApi, portfolio, stats } from '../test/fixtures'
+import { CustomerRecord } from './CustomerRecord'
+import { Customers } from './Customers'
 import { Documents } from './Documents'
 import { KnowledgeBase } from './KnowledgeBase'
 import { Playground } from './Playground'
+import { RiskDashboard } from './RiskDashboard'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -15,46 +17,178 @@ const failure = (status: number, code: string, message: string) => () => ({
   body: { error: { code, message } },
 })
 
-describe('Dashboard', () => {
-  it('shows real metrics, recent activity and service health', async () => {
-    mockApi({
-      'GET /api/admin/kb/stats': () => ({
-        body: stats({ status: 'degraded', by_status: { pending: 0, processing: 0, indexed: 2, failed: 1 } }),
-      }),
-      'GET /api/admin/activity?limit=8': () => ({
-        body: {
-          events: [
-            { id: 2, document_id: 'x', filename: 'scan.pdf', event: 'failed', detail: 'No extractable text', created_at: '2026-10-13T09:01:00+00:00' },
-            { id: 1, document_id: 'y', filename: 'policy.txt', event: 'indexed', detail: '4 chunks', created_at: '2026-10-13T09:00:00+00:00' },
-          ],
-        },
-      }),
-      'GET /api/admin/health': () => ({ body: health }),
-    })
-    page(<Dashboard />)
+describe('Risk Dashboard', () => {
+  it('shows the portfolio totals, risk distribution, delinquency trend and model scores', async () => {
+    mockApi({ 'GET /api/admin/portfolio/summary': () => ({ body: portfolio() }) })
+    page(<RiskDashboard />)
 
-    const overview = await screen.findByRole('region', { name: 'Overview' })
-    expect(within(overview).getByText('Total documents').nextSibling).toHaveTextContent('3')
-    expect(within(overview).getByText('Indexed').nextSibling).toHaveTextContent('2')
-    expect(within(overview).getByText('Failed').nextSibling).toHaveTextContent('1')
-    expect(within(overview).getByText('Degraded')).toBeInTheDocument()
-    expect(within(overview).getByText('14 searchable chunks')).toBeInTheDocument()
+    const overview = await screen.findByRole('region', { name: 'Portfolio overview' })
+    expect(within(overview).getByText('Customers').nextSibling).toHaveTextContent('200')
+    expect(within(overview).getByText('Paying late').nextSibling).toHaveTextContent('22.7%')
+    expect(within(overview).getByText('At least one month late in Sep 2005')).toBeInTheDocument()
+    expect(within(overview).getByText('High risk').nextSibling).toHaveTextContent('35')
+    expect(within(overview).getByRole('link', { name: /17.5% of customers/ })).toHaveAttribute(
+      'href',
+      '/customers?risk=high&sort=probability&order=desc',
+    )
+    expect(within(overview).getByText('Actual defaults').nextSibling).toHaveTextContent('44')
 
-    expect(await screen.findByText('Ingestion failed')).toBeInTheDocument()
-    expect(screen.getByText('No extractable text')).toBeInTheDocument()
-    expect(await screen.findByText('Answer model (LLM)')).toBeInTheDocument()
+    const risk = within(screen.getByRole('region', { name: 'Customers by predicted risk' }))
+    expect(risk.getByText('Medium risk').closest('li')).toHaveTextContent('55')
+    const actual = within(screen.getByRole('region', { name: 'Actual default rate by predicted risk' }))
+    expect(actual.getByText('High risk').closest('li')).toHaveTextContent('58%')
+    const trend = within(screen.getByRole('region', { name: 'Delinquency trend' }))
+    expect(trend.getByText('Aug 2005').closest('li')).toHaveTextContent('14.8%')
+    const education = within(screen.getByRole('region', { name: 'Default rate by education' }))
+    expect(education.getByText('High school').closest('li')).toHaveTextContent('25%')
+
+    const model = within(screen.getByRole('region', { name: 'Prediction model' }))
+    expect(model.getByText('XGBoost (tuned)')).toBeInTheDocument()
+    expect(model.getByText('0.771')).toBeInTheDocument()
+    expect(model.getByText(/62% of the customers who defaulted were flagged \(7 of 10\)/)).toBeInTheDocument()
+    expect(model.getByText(/44% of the customers flagged did default \(7 of 12\)/)).toBeInTheDocument()
   })
 
-  it('shows an empty state for a new knowledge base and an error state when a call fails', async () => {
+  it('says how to train the model when customers are loaded but not scored', async () => {
+    mockApi({ 'GET /api/admin/portfolio/summary': () => ({ body: portfolio({ model: null, by_risk: [] }) }) })
+    page(<RiskDashboard />)
+    expect(await screen.findByText('No risk predictions yet')).toBeInTheDocument()
+    expect(screen.getByText('python -m app.manage train-model')).toBeInTheDocument()
+    expect(screen.getByText('No model has been trained yet')).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Delinquency trend' })).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Prediction model' })).not.toBeInTheDocument()
+  })
+
+  it('explains how to load the data when there is none, and shows errors', async () => {
+    let fail = false
     mockApi({
-      'GET /api/admin/kb/stats': failure(500, 'internal_error', 'An unexpected server error occurred.'),
-      'GET /api/admin/activity?limit=8': () => ({ body: { events: [] } }),
-      'GET /api/admin/health': () => ({ body: health }),
+      'GET /api/admin/portfolio/summary': () =>
+        fail
+          ? failure(500, 'internal_error', 'An unexpected server error occurred.')()
+          : { body: portfolio({ loaded: false, customers: 0, model: null, by_risk: [], by_month: [], by_education: [] }) },
     })
-    page(<Dashboard />)
+    const first = page(<RiskDashboard />)
+    expect(await screen.findByText('No customer data loaded yet')).toBeInTheDocument()
+    expect(screen.getByText('python -m app.manage import-customers')).toBeInTheDocument()
+    expect(screen.queryByText('Actual defaults')).not.toBeInTheDocument()
+
+    first.unmount()
+    fail = true
+    page(<RiskDashboard />)
     expect(await screen.findByText('An unexpected server error occurred.')).toBeInTheDocument()
-    expect(await screen.findByText('No activity yet')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument()
+  })
+})
+
+describe('Customer Records', () => {
+  const list = (customers = [customer()], total = customers.length) => () => ({
+    body: { customers, total, page: 1, page_size: 25 },
+  })
+
+  it('lists customers with their latest payment, predicted risk and actual status', async () => {
+    mockApi({
+      'GET /api/admin/customers?sort=id&order=asc&page=1&page_size=25': list([
+        customer(),
+        customer({ customer_id: 8, latest_status: -1, default_probability: null, predicted_default: null, risk_level: null, actual_default: false }),
+      ]),
+    })
+    page(<Customers />)
+
+    const row = (await screen.findByRole('link', { name: 'Customer 7' })).closest('tr')!
+    expect(within(row).getByRole('link', { name: 'Customer 7' })).toHaveAttribute('href', '/customers/7')
+    expect(within(row).getByText('Age 24 · University')).toBeInTheDocument()
+    expect(within(row).getByText('NT$20,000')).toBeInTheDocument()
+    expect(within(row).getByText('2 months late')).toBeInTheDocument()
+    expect(within(row).getByText('High risk · 82%')).toBeInTheDocument()
+    expect(within(row).getByText('Defaulted')).toBeInTheDocument()
+    const other = screen.getByText('Customer 8').closest('tr')!
+    expect(within(other).getByText('Paid in full')).toBeInTheDocument()
+    expect(within(other).getByText('Not scored')).toBeInTheDocument()
+    expect(within(other).getByText('Did not default')).toBeInTheDocument()
+    expect(screen.getByText('Showing 1–2 of 2')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled()
+  })
+
+  it('sends the search, filters, sort and page to the API', async () => {
+    const user = userEvent.setup()
+    const base = 'GET /api/admin/customers?'
+    const api = mockApi({
+      [`${base}sort=id&order=asc&page=1&page_size=25`]: list([customer()], 60),
+      [`${base}sort=id&order=asc&page=2&page_size=25`]: list([customer()], 60),
+      [`${base}risk=high&sort=id&order=asc&page=1&page_size=25`]: list([customer()], 60),
+      [`${base}risk=high&actual=paid&sort=probability&order=desc&page=1&page_size=25`]: list([], 0),
+      [`${base}search=7&risk=high&actual=paid&sort=probability&order=desc&page=1&page_size=25`]: list(),
+    })
+    page(<Customers />)
+
+    await user.click(await screen.findByRole('button', { name: 'Next' }))
+    await waitFor(() => expect(api.calls.at(-1)!.key).toContain('page=2'))
+    await screen.findByText('Customer 7')
+    await user.selectOptions(screen.getByLabelText('Predicted risk'), 'High risk')
+    await waitFor(() => expect(api.calls.at(-1)!.key).toContain('risk=high&sort=id&order=asc&page=1'))
+    await user.selectOptions(screen.getByLabelText('Actual status'), 'Did not default')
+    await user.selectOptions(screen.getByLabelText('Sort by'), 'Highest predicted risk')
+    expect(await screen.findByText('No customers match')).toBeInTheDocument()
+    await user.type(screen.getByLabelText('Search'), '7')
+    expect(await screen.findByText('Customer 7')).toBeInTheDocument()
+    expect(api.calls.at(-1)!.key).toContain('search=7&risk=high&actual=paid&sort=probability')
+  })
+
+  it('opens with the filters in the address', async () => {
+    mockApi({
+      'GET /api/admin/customers?actual=defaulted&sort=id&order=asc&page=1&page_size=25': list([]),
+    })
+    render(
+      <MemoryRouter initialEntries={['/customers?actual=defaulted']}>
+        <Customers />
+      </MemoryRouter>,
+    )
+    expect(await screen.findByText('No customers match')).toBeInTheDocument()
+    expect(screen.getByLabelText('Actual status')).toHaveValue('defaulted')
+  })
+
+  const record = (path: string) =>
+    render(
+      <MemoryRouter initialEntries={[path]}>
+        <Routes>
+          <Route path="/customers/:customerId" element={<CustomerRecord />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+  it('shows one customer with account details, the prediction and payment history', async () => {
+    mockApi({ 'GET /api/admin/customers/7': () => ({ body: customerDetail }) })
+    record('/customers/7')
+    expect(await screen.findByRole('heading', { name: 'Customer 7' })).toBeInTheDocument()
+    const account = within(screen.getByRole('region', { name: 'Account details' }))
+    expect(account.getByText('NT$20,000')).toBeInTheDocument()
+    expect(account.getByText('Education').nextSibling).toHaveTextContent('University')
+    const prediction = within(screen.getByRole('region', { name: 'Risk prediction' }))
+    expect(prediction.getByText('High risk · 82%')).toBeInTheDocument()
+    expect(prediction.getByText('Will default')).toBeInTheDocument()
+    expect(prediction.getByText('Defaulted')).toBeInTheDocument()
+    expect(prediction.getByText(/held back for testing/)).toBeInTheDocument()
+    const history = within(screen.getByRole('region', { name: 'Payment history' }))
+    expect(history.getByText(/Paid in full 50% of the months that count · average delay 0.7 months/)).toBeInTheDocument()
+    const september = history.getByText('Sep 2005').closest('tr')!
+    expect(within(september).getByText('2 months late')).toBeInTheDocument()
+    expect(within(september).getByText('NT$3,913')).toBeInTheDocument()
+    expect(within(history.getByText('Aug 2005').closest('tr')!).getByText('NT$689')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Customer Records/ })).toHaveAttribute('href', '/customers')
+  })
+
+  it('says when a customer has no prediction, or does not exist', async () => {
+    mockApi({
+      'GET /api/admin/customers/8': () => ({
+        body: { ...customerDetail, customer_id: 8, default_probability: null, predicted_default: null, risk_level: null, data_split: null },
+      }),
+      'GET /api/admin/customers/999': failure(404, 'not_found', 'Customer not found.'),
+    })
+    const first = record('/customers/8')
+    expect(await screen.findByText(/has not been scored/)).toBeInTheDocument()
+    first.unmount()
+    record('/customers/999')
+    expect(await screen.findByText('Customer not found.')).toBeInTheDocument()
   })
 })
 
@@ -165,10 +299,16 @@ describe('Documents', () => {
 })
 
 describe('Knowledge Base', () => {
+  const ACTIVITY = [
+    { id: 2, document_id: 'x', filename: 'scan.pdf', event: 'failed', detail: 'No extractable text', created_at: '2026-10-13T09:01:00+00:00' },
+    { id: 1, document_id: 'y', filename: 'policy.txt', event: 'indexed', detail: '4 chunks', created_at: '2026-10-13T09:00:00+00:00' },
+  ]
+
   it('shows index statistics, configuration and health', async () => {
     mockApi({
       'GET /api/admin/kb/stats': () => ({ body: stats() }),
       'GET /api/admin/health': () => ({ body: health }),
+      'GET /api/admin/activity?limit=8': () => ({ body: { events: ACTIVITY } }),
       'GET /api/admin/config': () => ({ body: config }),
     })
     page(<KnowledgeBase />)
@@ -179,6 +319,9 @@ describe('Knowledge Base', () => {
     expect(screen.getByText('2 PDF · 1 TXT')).toBeInTheDocument()
     expect(await screen.findByText('anthropic · claude-opus-5-5')).toBeInTheDocument()
     expect(await screen.findByText('Upload storage is writable')).toBeInTheDocument()
+    expect(await screen.findByText('Ingestion failed')).toBeInTheDocument()
+    expect(screen.getByText('No extractable text')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'All documents' })).toHaveAttribute('href', '/assistant/documents')
   })
 
   it('explains an empty knowledge base and disables rebuild', async () => {
@@ -187,6 +330,7 @@ describe('Knowledge Base', () => {
         body: stats({ status: 'empty', total_documents: 0, total_chunks: 0, searchable_chunks: 0, by_file_type: {}, last_indexed_at: null, by_status: { pending: 0, processing: 0, indexed: 0, failed: 0 } }),
       }),
       'GET /api/admin/health': () => ({ body: health }),
+      'GET /api/admin/activity?limit=8': () => ({ body: { events: ACTIVITY } }),
       'GET /api/admin/config': () => ({ body: { ...config, llm_model: null } }),
     })
     page(<KnowledgeBase />)
@@ -200,6 +344,7 @@ describe('Knowledge Base', () => {
     const api = mockApi({
       'GET /api/admin/kb/stats': () => ({ body: stats() }),
       'GET /api/admin/health': () => ({ body: health }),
+      'GET /api/admin/activity?limit=8': () => ({ body: { events: ACTIVITY } }),
       'GET /api/admin/config': () => ({ body: config }),
       'POST /api/admin/kb/rebuild': () => ({ status: 202, body: { queued: 3 } }),
     })
@@ -214,6 +359,7 @@ describe('Knowledge Base', () => {
     mockApi({
       'GET /api/admin/kb/stats': () => ({ body: stats() }),
       'GET /api/admin/health': () => ({ body: health }),
+      'GET /api/admin/activity?limit=8': () => ({ body: { events: ACTIVITY } }),
       'GET /api/admin/config': () => ({ body: { ...config, llm_provider: 'ollama', llm_model: 'llama3.2' } }),
     })
     page(<KnowledgeBase />)
@@ -221,7 +367,7 @@ describe('Knowledge Base', () => {
   })
 })
 
-describe('RAG Playground', () => {
+describe('AI Assistant', () => {
   it('shows the answer with only the sources the backend returned', async () => {
     const user = userEvent.setup()
     const api = mockApi({

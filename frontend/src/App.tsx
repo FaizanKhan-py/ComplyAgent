@@ -3,11 +3,14 @@ import { useAuth } from './auth'
 import { AuthShell } from './components/AuthShell'
 import { Layout } from './components/Layout'
 import { ErrorState, Loading } from './components/ui'
-import { Dashboard } from './pages/Dashboard'
+import { Assistant } from './pages/Assistant'
+import { CustomerRecord } from './pages/CustomerRecord'
+import { Customers } from './pages/Customers'
 import { Documents } from './pages/Documents'
 import { KnowledgeBase } from './pages/KnowledgeBase'
 import { Login } from './pages/Login'
 import { Playground } from './pages/Playground'
+import { RiskDashboard } from './pages/RiskDashboard'
 import { SignUp } from './pages/SignUp'
 
 /**
@@ -45,7 +48,7 @@ export default function App() {
   }
 
   const isAdmin = state.user.role === 'admin'
-  const home = isAdmin ? '/' : '/playground'
+  const home = isAdmin ? '/' : '/assistant'
   const from = (location.state as { from?: string } | null)?.from
   const afterSignIn = from && from !== '/login' && from !== '/signup' ? from : home
 
@@ -56,12 +59,20 @@ export default function App() {
       <Route element={<Layout />}>
         {isAdmin ? (
           <>
-            <Route index element={<Dashboard />} />
-            <Route path="documents" element={<Documents />} />
-            <Route path="knowledge-base" element={<KnowledgeBase />} />
+            <Route index element={<RiskDashboard />} />
+            <Route path="customers" element={<Customers />} />
+            <Route path="customers/:customerId" element={<CustomerRecord />} />
           </>
         ) : null}
-        <Route path="playground" element={<Playground showModelStatus={isAdmin} />} />
+        <Route path="assistant" element={<Assistant showAdminTabs={isAdmin} />}>
+          <Route index element={<Playground showModelStatus={isAdmin} />} />
+          {isAdmin ? (
+            <>
+              <Route path="documents" element={<Documents />} />
+              <Route path="knowledge-base" element={<KnowledgeBase />} />
+            </>
+          ) : null}
+        </Route>
         <Route path="*" element={<Navigate to={home} replace />} />
       </Route>
     </Routes>

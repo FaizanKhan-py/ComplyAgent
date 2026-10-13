@@ -6,7 +6,7 @@ import { api } from '../api/client'
 import type { User } from '../api/types'
 import { AuthProvider } from '../auth'
 import { passwordStrength } from '../lib/validation'
-import { config, health, mockApi, stats } from '../test/fixtures'
+import { config, mockApi, portfolio } from '../test/fixtures'
 
 afterEach(async () => {
   // Drop the in-memory CSRF token so one test cannot leak a session into the next.
@@ -31,9 +31,7 @@ const signedOut = () => ({
 })
 const session = (user: User) => () => ({ body: { user, csrf_token: 'csrf-123' } })
 const dashboardRoutes = {
-  'GET /api/admin/kb/stats': () => ({ body: stats() }),
-  'GET /api/admin/activity?limit=8': () => ({ body: { events: [] } }),
-  'GET /api/admin/health': () => ({ body: health }),
+  'GET /api/admin/portfolio/summary': () => ({ body: portfolio() }),
 }
 
 const app = (path = '/') =>
@@ -94,7 +92,7 @@ describe('Sign in', () => {
     expect(password).toHaveValue('')
 
     await user.type(password, 'correct horse battery{Enter}')
-    expect(await screen.findByRole('heading', { name: 'Dashboard' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Risk Dashboard' })).toBeInTheDocument()
     const login = calls.calls.filter((c) => c.key === 'POST /api/auth/login').at(-1)!
     expect(JSON.parse(login.init.body as string)).toEqual({
       email: 'root@example.com',
@@ -103,7 +101,7 @@ describe('Sign in', () => {
     expect(screen.getByText('Root Admin')).toBeInTheDocument()
     expect(screen.getByText('root@example.com')).toBeInTheDocument()
     expect(screen.getByText('Administrator')).toBeInTheDocument()
-    for (const link of ['Dashboard', 'Documents', 'Knowledge Base', 'RAG Playground']) {
+    for (const link of ['Risk Dashboard', 'Customer Records', 'AI Assistant']) {
       expect(screen.getByRole('link', { name: link })).toBeInTheDocument()
     }
     // Nothing about the session is kept where scripts or other tabs could read it.
@@ -135,14 +133,14 @@ describe('Sign in', () => {
       'GET /api/auth/me': session(admin),
       'GET /api/admin/documents': () => ({ body: { documents: [] } }),
     })
-    app('/documents')
+    app('/assistant/documents')
     expect(await screen.findByRole('heading', { name: 'Documents' })).toBeInTheDocument()
     expect(screen.queryByLabelText('Password')).not.toBeInTheDocument()
   })
 
   it('returns to the login page when the server says the session has ended', async () => {
     mockApi({ 'GET /api/auth/me': session(admin), 'GET /api/admin/documents': signedOut })
-    app('/documents')
+    app('/assistant/documents')
     expect(await screen.findByText('Your session ended. Sign in again.')).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Sign in' })).toBeInTheDocument()
   })
@@ -156,18 +154,18 @@ describe('Sign in', () => {
 })
 
 describe('Roles', () => {
-  it('gives an ordinary user only the playground, and never calls admin endpoints', async () => {
+  it('gives an ordinary user only the assistant, and never calls admin endpoints', async () => {
     const calls = mockApi({
       'GET /api/auth/me': session(member),
       'GET /api/admin/config': () => ({ body: { ...config, llm_model: null, llm_provider: null } }),
     })
-    app('/documents') // an admin page: the user is moved to the playground
-    expect(await screen.findByRole('heading', { name: 'RAG Playground' })).toBeInTheDocument()
+    app('/customers') // an admin page: the user is moved to the assistant
+    expect(await screen.findByRole('heading', { name: 'AI Assistant' })).toBeInTheDocument()
     expect(screen.getByText('Ada Lovelace')).toBeInTheDocument()
     expect(screen.getByText('Member')).toBeInTheDocument()
     expect(screen.getAllByRole('link').map((a) => a.textContent)).toEqual([
       'Skip to content',
-      'RAG Playground',
+      'AI Assistant',
     ])
     expect(await screen.findByText(/An administrator can enable generated answers/)).toBeInTheDocument()
     await waitFor(() => expect(calls.count('GET /api/admin/config')).toBe(1))

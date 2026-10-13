@@ -1,4 +1,5 @@
-"""SQLite store: the knowledge base (documents, chunks, embeddings) and user accounts."""
+"""SQLite store: the knowledge base (documents, chunks, embeddings), user accounts and the
+customer portfolio (customers, payment history, risk predictions)."""
 
 from __future__ import annotations
 
@@ -66,6 +67,40 @@ CREATE TABLE IF NOT EXISTS sessions (
     expires_at  INTEGER NOT NULL                 -- Unix time
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE TABLE IF NOT EXISTS customers (
+    customer_id        INTEGER PRIMARY KEY,      -- the ID column of the UCI dataset
+    limit_bal          INTEGER NOT NULL,         -- credit limit, NT dollars
+    sex                TEXT NOT NULL,
+    education_code     INTEGER NOT NULL,         -- as the model sees it (notebook cleaning)
+    education          TEXT NOT NULL,
+    marriage           TEXT NOT NULL,
+    age                INTEGER NOT NULL,
+    default_next_month INTEGER NOT NULL,         -- what actually happened, 0 or 1
+    data_split         TEXT,                     -- train | validation | test, set by training
+    created_at         TEXT NOT NULL             -- when the row was imported
+);
+CREATE TABLE IF NOT EXISTS monthly_history (
+    customer_id      INTEGER NOT NULL REFERENCES customers(customer_id) ON DELETE CASCADE,
+    month_no         INTEGER NOT NULL,           -- 1 is the most recent month
+    repayment_status INTEGER NOT NULL,           -- -2 no use, -1 paid in full, 0 revolving, n late
+    bill_amt         INTEGER NOT NULL,
+    pay_amt          INTEGER NOT NULL,
+    PRIMARY KEY (customer_id, month_no)
+);
+CREATE TABLE IF NOT EXISTS model_runs (
+    run_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    model_name      TEXT NOT NULL,
+    hyperparameters TEXT NOT NULL,               -- JSON
+    features        TEXT NOT NULL,               -- JSON list, in training order
+    metrics         TEXT NOT NULL,               -- JSON: validation and test scores
+    trained_at      TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS predictions (
+    customer_id         INTEGER PRIMARY KEY REFERENCES customers(customer_id) ON DELETE CASCADE,
+    run_id              INTEGER NOT NULL REFERENCES model_runs(run_id) ON DELETE CASCADE,
+    default_probability REAL NOT NULL,
+    predicted_default   INTEGER NOT NULL
+);
 """
 
 USER_COLUMNS = "id, email, full_name, role, created_at, last_login_at"

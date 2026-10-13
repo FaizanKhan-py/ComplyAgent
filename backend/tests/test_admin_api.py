@@ -19,6 +19,9 @@ ADMIN_ROUTES = [
     ("get", "/api/admin/activity"),
     ("get", "/api/admin/kb/stats"),
     ("post", "/api/admin/kb/rebuild"),
+    ("get", "/api/admin/portfolio/summary"),
+    ("get", "/api/admin/customers"),
+    ("get", "/api/admin/customers/1"),
     ("post", "/api/admin/rag/query"),
 ]
 
@@ -37,7 +40,7 @@ def test_admin_routes_require_the_token(client, method, path):
 
 def test_every_admin_route_is_covered_by_the_auth_test(client):
     routes = {
-        (method.lower(), route.path.replace("{doc_id}", "abc"))
+        (method.lower(), route.path.replace("{doc_id}", "abc").replace("{customer_id}", "1"))
         for route in client.app.routes
         if getattr(route, "path", "").startswith("/api/admin")
         for method in route.methods - {"HEAD", "OPTIONS"}

@@ -4,9 +4,11 @@ ComplyAgent is an AI-powered collections decision-support system. This repositor
 
 | Part | Location | What it does |
 |---|---|---|
-| Data pipeline | `notebooks/`, `sql/`, `src/` | Builds the training table and loads it into MySQL |
+| Data and model | `notebooks/Data_pipeline_and_Modeling.ipynb` | Explores the UCI credit card default data and trains the risk model the app uses |
+| MySQL database | `database/` | The team's MySQL schema and loader for the same data. The app does not need it: it keeps its own copy in SQLite, with matching tables |
+| Earlier data pipeline | `notebooks/complyagent_data_extraction.ipynb`, `sql/`, `src/` | The first, LendingClub-based pipeline. The app no longer uses it |
 | **Admin API + RAG** | `backend/` | Ingests policy documents, indexes them, answers policy questions with sources |
-| **Admin Panel** | `frontend/` | Sign-in and sign-up, dashboard, document management, knowledge-base view, RAG playground |
+| **Admin Panel** | `frontend/` | Sign-in and sign-up, and three sections: Risk Dashboard, Customer Records, AI Assistant |
 | Sample policies | `sample_policies/` | Three fictional policies for demos and tests |
 
 The rest of this README covers the Admin Panel and the RAG system.
@@ -17,7 +19,7 @@ The rest of this README covers the Admin Panel and the RAG system.
 Browser ── React admin panel (Vite, TypeScript)
               │  /api/*  (session cookie + CSRF token)
               ▼
-        FastAPI backend ──► SQLite database         users, sessions, documents, chunks, embeddings, activity log
+        FastAPI backend ──► SQLite database         users, sessions, documents, chunks, embeddings, activity log, customers, payment history, predictions
               │         ──► storage/uploads/        original files, named by document ID
               ├──► Embeddings: BAAI/bge-small-en-v1.5, run locally with fastembed (no API key)
               └──► Answers:    Claude (Anthropic API) or a local Ollama model, optional
@@ -34,43 +36,49 @@ Browser ── React admin panel (Vite, TypeScript)
 
 The knowledge base is separate from the team's MySQL database, which is not required to run this part.
 
-## Quick start
+## The admin panel
 
-You need Python 3.10 or newer (tested on 3.12) and Node.js 20 or newer.
+| Section | What it shows |
+|---|---|
+| **Risk Dashboard** | Portfolio totals, customers by predicted risk, the delinquency trend by month, default rate by education, and the model's test scores |
+| **Customer Records** | Filterable list of customers with predicted risk and actual status; each record has account details, the prediction and six months of payment history |
+| **AI Assistant** | Policy questions answered with sources. Administrators also get the **Documents** and **Knowledge Base** tabs here |
 
-**1. Backend** (terminal 1)
-
-```bash
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate            # Windows: .venv\Scripts\activate
-pip install -r requirements-dev.txt
-cp .env.example .env                 # then edit it, see "Configuration"
-uvicorn app.main:app --reload --port 8000
-```
-
-The first start downloads the embedding model, so it needs internet access once.
-Interactive API docs are at http://localhost:8000/docs.
-
-**Create the first administrator** (once, in the same `backend` directory and virtualenv). It
-asks for a password without showing it:
+The Risk Dashboard and Customer Records use the
+[UCI "Default of Credit Card Clients"](https://archive.ics.uci.edu/dataset/350/default) data
+(30,000 customers, six months of payment history each) and the model from
+`notebooks/Data_pipeline_and_Modeling.ipynb`. Set both up once:
 
 ```bash
-python -m app.manage create-admin --email you@example.com --name "Your Name"
+# from backend/, with the virtualenv active
+pip install -r requirements-ml.txt        # scikit-learn and xgboost, needed for training only
+python -m app.manage import-customers     # downloads the data from UCI into the SQLite database
+python -m app.manage train-model          # trains the model and saves a prediction for every customer
 ```
 
-**2. Frontend** (terminal 2)
+`import-customers --csv file.csv` loads a copy you downloaded yourself, and `--replace` deletes
+what is loaded first. Until the data is loaded both sections show these commands.
 
-```bash
-cd frontend
-npm install
-npm run dev
-```
+**The model.** `train-model` builds the notebook's final model: XGBoost with the hyperparameters
+its grid search chose, on the same seven features (credit limit, age, on-time payment rate,
+average payment delay, average credit utilisation, education, sex), the same 70/15/15 stratified
+split and the same class weighting. On the 4,500 test customers it scores ROC-AUC 0.770, recall
+0.62, precision 0.44, accuracy 0.74; the notebook reports 0.769, 0.62, 0.45 and 0.75 (the small
+gap is library versions). The API does not load the model: it reads the saved predictions, so
+the server runs without scikit-learn or xgboost.
 
-Open http://localhost:5173 and sign in with the administrator account. Other people can use
-**Create an account** on the sign-in page; they get an ordinary account (see "Accounts and
-access"). The dev server forwards `/api` to `http://127.0.0.1:8000` (override with
-`VITE_DEV_BACKEND=http://host:port npm run dev`).
+What to know about the figures:
+
+- **Predicted and actual are shown side by side.** "Predicted risk" is the model's chance of
+  default next month, in three levels (low under 40%, medium 40–69%, high 70% or more, as in the
+  team's `v_customer_risk_report`). "Actual status" is what the data records.
+- **Most customers were used to train the model**, so their predictions are not an independent
+  test. Each customer record says whether that customer was in the training, validation or test
+  group; the Risk Dashboard reports the scores on the test group only.
+- **The model uses sex and age as inputs**, as the notebook does. Using them to make real
+  lending or collections decisions is restricted or illegal in many places; treat this as a
+  study model.
+- The data is from Taiwan in 2005: amounts are New Taiwan dollars and customers have no names.
 
 ## Accounts and access
 
@@ -79,8 +87,8 @@ Everything except the sign-in and sign-up pages needs an account. There is no op
 
 | Role | How you get it | Can do |
 |---|---|---|
-| `user` | Sign up on the web page | Use the RAG Playground: ask questions, see answers and sources |
-| `admin` | Created or promoted from the server command line only | Everything: dashboard, upload/delete/reindex documents, knowledge base, health, playground |
+| `user` | Sign up on the web page | Use the AI Assistant: ask questions, see answers and sources |
+| `admin` | Created or promoted from the server command line only | Everything: risk dashboard, customer records, upload/delete/reindex documents, knowledge base, health, assistant |
 
 Sign-up always creates a `user`. The request has no role field, and the server ignores any
 extra fields, so nobody can register as an administrator. Roles are checked by the API on every
@@ -192,7 +200,7 @@ answer model never requires re-indexing.
    ```
 
 4. Restart the backend. The startup log prints `Answer model: llama3.2 (Ollama) is available`,
-   and the same line appears under **Answer model (LLM)** on the Dashboard and Knowledge Base
+   and the same line appears under **Answer model (LLM)** on the Knowledge Base
    pages.
 
 `OLLAMA_MODEL` must be a chat model. Embedding-only models such as `nomic-embed-text` are
@@ -201,7 +209,7 @@ loads; without a GPU, keep `LLM_TIMEOUT_SECONDS` at 120 or more.
 
 If Ollama is stopped, the model is not pulled, or a request fails, nothing breaks: queries
 return the retrieved passages with a warning that says why, and the health panel and the
-playground show the actual error. Typical messages:
+assistant show the actual error. Typical messages:
 
 | Message | Fix |
 |---|---|
@@ -288,19 +296,24 @@ always have the shape `{"error": {"code": "...", "message": "..."}}`.
 | GET | `/api/admin/activity?limit=20` | admin | Recent uploads, indexing results, deletions |
 | GET | `/api/admin/kb/stats` | admin | Document and chunk counts, knowledge-base status |
 | POST | `/api/admin/kb/rebuild` | admin | Reindex every document |
+| GET | `/api/admin/portfolio/summary` | admin | Portfolio totals, the groups behind the Risk Dashboard charts, and the model's scores |
+| GET | `/api/admin/customers` | admin | Customers, paged: `search` (customer number), `risk` (`low`, `medium`, `high`), `actual` (`defaulted`, `paid`), `sort`, `order`, `page`, `page_size` |
+| GET | `/api/admin/customers/{id}` | admin | One customer with their prediction and payment history |
 | POST | `/api/admin/rag/query` | user | Ask a question: `{question, history?, top_k?, min_score?, document_ids?}` |
 
 ## Demo script
 
 1. Start both servers, create an administrator (see "Quick start"), open http://localhost:5173
    and sign in.
-2. **Dashboard**: everything is zero and the knowledge base is "Empty".
-3. **Documents**: upload the three files in `sample_policies/`. Each moves from Queued to Indexed
+2. **Risk Dashboard** and **Customer Records**: the customer portfolio and risk predictions, once
+   `import-customers` and `train-model` have run.
+   Open **AI Assistant → Knowledge Base**: everything is zero and the knowledge base is "Empty".
+3. **AI Assistant → Documents**: upload the three files in `sample_policies/`. Each moves from Queued to Indexed
    with its chunk count; the PDF shows 2 pages.
 4. Upload `escalation_policy.pdf` again to show the duplicate rejection, and any `.docx` or
    `.exe` to show type validation.
 5. **Knowledge Base**: 3 of 3 indexed, 14 searchable chunks, model and chunking settings, health.
-6. **RAG Playground**, ask:
+6. **AI Assistant → Chat**, ask:
    - "When must an account be escalated to a human?" The top source is `escalation_policy.pdf`,
      page 2. Open it to read the passage.
    - "Can an automated agent approve a hardship plan?" The top source is the hardship policy.
@@ -356,4 +369,4 @@ that needs a key.
 - The default score threshold (0.6) was tuned on the sample policies with `bge-small`. Questions
   that are on-topic but unanswered by the documents can still retrieve passages; in `generated`
   mode Claude is instructed to say the evidence is insufficient. Tune `min_score` live in the
-  playground's retrieval settings.
+  assistant's retrieval settings.

@@ -1,8 +1,11 @@
 import type {
   AdminConfig,
+  CustomerDetail,
+  CustomerSummary,
   Health,
   KnowledgeBaseStats,
   PolicyDocument,
+  PortfolioSummary,
   QueryResponse,
 } from '../api/types'
 
@@ -100,6 +103,70 @@ export function answer(overrides: Partial<QueryResponse> = {}): QueryResponse {
     retrieval: { top_k: 5, min_score: 0.6, embedding_model: config.embedding_model, chunks_searched: 14 },
     ...overrides,
   }
+}
+
+const scores = { customers: 30, accuracy: 0.74, precision: 0.44, recall: 0.62, f1: 0.52, roc_auc: 0.7712, tn: 15, fp: 5, fn: 3, tp: 7 }
+
+export function portfolio(overrides: Partial<PortfolioSummary> = {}): PortfolioSummary {
+  return {
+    loaded: true,
+    imported_at: '2026-10-13T09:00:00+00:00',
+    customers: 200,
+    total_credit_limit: 33_000_000,
+    latest_billed: 10_000_000,
+    latest_late_rate: 0.227,
+    actual_defaults: 44,
+    model: {
+      model_name: 'XGBoost (tuned)',
+      trained_at: '2026-10-13T09:05:00+00:00',
+      features: ['limit_bal', 'age'],
+      metrics: { threshold: 0.5, validation: scores, test: scores },
+    },
+    by_risk: [
+      { risk_level: 'low', customers: 110, default_rate: 0.09 },
+      { risk_level: 'medium', customers: 55, default_rate: 0.26 },
+      { risk_level: 'high', customers: 35, default_rate: 0.58 },
+    ],
+    by_month: [
+      { month: 'Aug 2005', customers: 200, late_rate: 0.148, billed: 9_000_000, paid: 1_100_000 },
+      { month: 'Sep 2005', customers: 200, late_rate: 0.227, billed: 10_000_000, paid: 1_200_000 },
+    ],
+    by_education: [
+      { education: 'Graduate school', customers: 70, default_rate: 0.19 },
+      { education: 'High school', customers: 130, default_rate: 0.25 },
+    ],
+    ...overrides,
+  }
+}
+
+export function customer(overrides: Partial<CustomerSummary> = {}): CustomerSummary {
+  return {
+    customer_id: 7,
+    limit_bal: 20000,
+    age: 24,
+    sex: 'Female',
+    education: 'University',
+    marriage: 'Married',
+    latest_status: 2,
+    latest_bill: 3913,
+    default_probability: 0.8231,
+    predicted_default: true,
+    risk_level: 'high',
+    actual_default: true,
+    data_split: 'test',
+    ...overrides,
+  }
+}
+
+export const customerDetail: CustomerDetail = {
+  ...customer(),
+  on_time_payment_rate: 0.5,
+  avg_payment_delay: 0.667,
+  avg_credit_utilization: 0.064,
+  history: [
+    { month_no: 1, month: 'Sep 2005', repayment_status: 2, bill_amt: 3913, pay_amt: 0 },
+    { month_no: 2, month: 'Aug 2005', repayment_status: -1, bill_amt: 3102, pay_amt: 689 },
+  ],
 }
 
 type Handler = (init: RequestInit) => { status?: number; body: unknown } | Promise<never>

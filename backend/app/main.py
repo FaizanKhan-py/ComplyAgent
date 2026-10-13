@@ -10,6 +10,7 @@ import logging
 import threading
 import time
 from contextlib import asynccontextmanager
+from typing import Literal
 
 from dotenv import load_dotenv
 from fastapi import (
@@ -35,6 +36,7 @@ from .embeddings import Embedder, EmbeddingError, build_embedder
 from .extraction import ValidationError
 from .knowledge_base import Busy, DuplicateDocument, KnowledgeBase, NotFound
 from .llm import AnswerGenerator, build_generator
+from .portfolio import SORT_COLUMNS, Portfolio
 
 logger = logging.getLogger("complyagent.api")
 
@@ -69,6 +71,7 @@ def create_app(
     if generator is _UNSET:
         generator = build_generator(settings)
     kb = KnowledgeBase(settings, Database(settings.db_path), embedder, generator)
+    portfolio = Portfolio(kb.db)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -482,6 +485,52 @@ def create_app(
 
         background.add_task(run)
         return {"queued": len(ids)}
+
+    # --- admin: customer portfolio ---------------------------------------------------------
+
+    @app.get(
+        "/api/admin/portfolio/summary",
+        response_model=schemas.PortfolioSummary,
+        dependencies=[admin],
+        tags=["portfolio"],
+    )
+    def portfolio_summary():
+        return portfolio.summary()
+
+    @app.get(
+        "/api/admin/customers",
+        response_model=schemas.CustomerList,
+        dependencies=[admin],
+        tags=["portfolio"],
+        responses=ERROR_RESPONSES,
+    )
+    def list_customers(
+        search: str = Query("", max_length=50),
+        risk: schemas.RiskLevel | None = None,
+        actual: Literal["defaulted", "paid"] | None = None,
+        sort: str = Query("id", enum=sorted(SORT_COLUMNS)),
+        order: Literal["asc", "desc"] = "asc",
+        page: int = Query(1, ge=1, le=100_000),
+        page_size: int = Query(25, ge=1, le=100),
+    ):
+        if sort not in SORT_COLUMNS:
+            raise ApiError(422, "invalid_request", f"sort: must be one of {sorted(SORT_COLUMNS)}")
+        return portfolio.list_customers(
+            search, risk, actual, sort, order == "desc", page, page_size
+        )
+
+    @app.get(
+        "/api/admin/customers/{customer_id}",
+        response_model=schemas.CustomerDetail,
+        dependencies=[admin],
+        tags=["portfolio"],
+        responses=ERROR_RESPONSES,
+    )
+    def get_customer(customer_id: int):
+        customer = portfolio.get_customer(customer_id)
+        if not customer:
+            raise ApiError(404, "not_found", "Customer not found.")
+        return customer
 
     # --- admin: RAG ------------------------------------------------------------------------
 

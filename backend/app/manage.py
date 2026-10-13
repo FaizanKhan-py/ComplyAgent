@@ -1,4 +1,4 @@
-"""Account administration from the server's command line.
+"""Account and data administration from the server's command line.
 
 Run from the backend directory with the virtualenv active:
 
@@ -6,6 +6,8 @@ Run from the backend directory with the virtualenv active:
     python -m app.manage set-role --email someone@example.com --role admin
     python -m app.manage reset-password --email someone@example.com
     python -m app.manage list-users
+    python -m app.manage import-customers [--csv path/to/data.csv] [--replace]
+    python -m app.manage train-model
 
 Sign-up through the web page always creates an ordinary user. Administrators can only be made
 here, by someone who already has access to the server.
@@ -16,12 +18,14 @@ from __future__ import annotations
 import argparse
 import getpass
 import sys
+from pathlib import Path
 
 from dotenv import load_dotenv
 
-from . import auth
+from . import auth, risk_model
 from .config import BACKEND_DIR, Settings
 from .db import Database, EmailTaken
+from .portfolio import DATA_URL, ImportFailed, Portfolio
 
 
 def _read_password() -> str:
@@ -41,7 +45,9 @@ def _existing(db: Database, email: str) -> dict:
     return user
 
 
-def main(argv: list[str] | None = None, db: Database | None = None) -> int:
+def main(
+    argv: list[str] | None = None, db: Database | None = None, models_dir: Path | None = None
+) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m app.manage", description=__doc__.split("\n")[0]
     )
@@ -55,11 +61,16 @@ def main(argv: list[str] | None = None, db: Database | None = None) -> int:
     reset = commands.add_parser("reset-password", help="set a new password and end all sessions")
     reset.add_argument("--email", required=True)
     commands.add_parser("list-users", help="list every account")
+    data = commands.add_parser("import-customers", help="load the UCI credit card default data")
+    data.add_argument("--csv", type=Path, help="a downloaded copy; otherwise it is downloaded")
+    data.add_argument("--replace", action="store_true", help="delete the loaded data first")
+    commands.add_parser("train-model", help="train the risk model and score every customer")
     args = parser.parse_args(argv)
 
+    load_dotenv(BACKEND_DIR / ".env")
+    settings = Settings.from_env()
     if db is None:
-        load_dotenv(BACKEND_DIR / ".env")
-        db = Database(Settings.from_env().db_path)
+        db = Database(settings.db_path)
 
     try:
         if args.command == "list-users":
@@ -67,6 +78,20 @@ def main(argv: list[str] | None = None, db: Database | None = None) -> int:
             for user in users:
                 print(f"{user['id']:>4}  {user['role']:<5}  {user['email']}  ({user['full_name']})")
             print(f"{len(users)} account(s)")
+            return 0
+        if args.command == "import-customers":
+            count = Portfolio(db).import_data(args.csv, replace=args.replace)
+            print(f"Imported {count} customers from {args.csv or DATA_URL}.")
+            print("Next, score them with: python -m app.manage train-model")
+            return 0
+        if args.command == "train-model":
+            result = risk_model.train(db, models_dir or settings.models_dir)
+            test = result["test"]
+            print(f"Trained {risk_model.MODEL_NAME} and scored {result['customers']} customers.")
+            print(
+                f"Test customers: ROC-AUC {test['roc_auc']:.4f}, recall {test['recall']:.4f}, "
+                f"precision {test['precision']:.4f}, accuracy {test['accuracy']:.4f}"
+            )
             return 0
 
         email = auth.normalize_email(args.email)
@@ -93,6 +118,8 @@ def main(argv: list[str] | None = None, db: Database | None = None) -> int:
             print(f"Password changed for {email}. Their open sessions were ended.")
     except auth.AuthError as exc:
         raise SystemExit(exc.message) from exc
+    except (ImportFailed, risk_model.TrainingFailed) as exc:
+        raise SystemExit(str(exc)) from exc
     except EmailTaken:
         raise SystemExit("That email address already has an account.") from None
     return 0

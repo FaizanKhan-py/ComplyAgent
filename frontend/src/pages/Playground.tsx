@@ -213,8 +213,8 @@ export function Playground({ showModelStatus = true }: { showModelStatus?: boole
   return (
     <div className="playground">
       <PageHeader
-        title="RAG Playground"
-        description="Ask policy questions and inspect exactly which passages were retrieved."
+        title="AI Assistant"
+        description="Ask policy questions. Answers come from the uploaded policies and show their sources."
         actions={
           <button type="button" className="btn" onClick={newConversation} disabled={turns.length === 0}>
             New conversation

@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 
 DocumentStatus = Literal["pending", "processing", "indexed", "failed"]
 ComponentStatus = Literal["ok", "degraded", "error"]
+RiskLevel = Literal["low", "medium", "high"]
 
 
 class ErrorBody(BaseModel):
@@ -186,3 +187,101 @@ class QueryResponse(BaseModel):
     model: str | None
     warning: str | None
     retrieval: RetrievalInfo
+
+
+class ModelScores(BaseModel):
+    customers: int
+    accuracy: float
+    precision: float
+    recall: float
+    f1: float
+    roc_auc: float
+    tn: int
+    fp: int
+    fn: int
+    tp: int
+
+
+class ModelMetrics(BaseModel):
+    threshold: float
+    validation: ModelScores
+    test: ModelScores
+
+
+class RiskModel(BaseModel):
+    model_name: str
+    trained_at: str
+    features: list[str]
+    metrics: ModelMetrics
+
+
+class RiskGroup(BaseModel):
+    risk_level: RiskLevel
+    customers: int
+    default_rate: float | None
+
+
+class MonthGroup(BaseModel):
+    month: str
+    customers: int
+    late_rate: float
+    billed: int
+    paid: int
+
+
+class EducationGroup(BaseModel):
+    education: str
+    customers: int
+    default_rate: float
+
+
+class PortfolioSummary(BaseModel):
+    loaded: bool
+    imported_at: str | None
+    customers: int
+    total_credit_limit: int
+    latest_billed: int
+    latest_late_rate: float | None
+    actual_defaults: int
+    model: RiskModel | None
+    by_risk: list[RiskGroup]
+    by_month: list[MonthGroup]
+    by_education: list[EducationGroup]
+
+
+class CustomerSummary(BaseModel):
+    customer_id: int
+    limit_bal: int
+    age: int
+    sex: str
+    education: str
+    marriage: str
+    latest_status: int | None
+    latest_bill: int | None
+    default_probability: float | None
+    predicted_default: bool | None
+    risk_level: RiskLevel | None
+    actual_default: bool
+    data_split: Literal["train", "validation", "test"] | None
+
+
+class CustomerList(BaseModel):
+    customers: list[CustomerSummary]
+    total: int
+    page: int
+    page_size: int
+
+
+class MonthlyRecord(BaseModel):
+    month_no: int
+    month: str
+    repayment_status: int
+    bill_amt: int
+    pay_amt: int
+
+
+class CustomerDetail(CustomerSummary):
+    on_time_payment_rate: float | None
+    avg_payment_delay: float | None
+    avg_credit_utilization: float | None
+    history: list[MonthlyRecord]

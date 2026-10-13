@@ -2,10 +2,14 @@ import type {
   ActivityEvent,
   AdminConfig,
   AuthStatus,
+  CustomerDetail,
+  CustomerList,
+  CustomerQuery,
   DeleteResult,
   Health,
   KnowledgeBaseStats,
   PolicyDocument,
+  PortfolioSummary,
   QueryRequest,
   QueryResponse,
   RegisterRequest,
@@ -147,6 +151,17 @@ export const api = {
 
   stats: () => request<KnowledgeBaseStats>('/api/admin/kb/stats'),
   rebuild: () => request<{ queued: number }>('/api/admin/kb/rebuild', { method: 'POST' }),
+
+  portfolioSummary: () => request<PortfolioSummary>('/api/admin/portfolio/summary'),
+  listCustomers: (query: CustomerQuery = {}) => {
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== '') params.set(key, String(value))
+    }
+    const suffix = params.size ? `?${params}` : ''
+    return request<CustomerList>(`/api/admin/customers${suffix}`)
+  },
+  getCustomer: (id: number) => request<CustomerDetail>(`/api/admin/customers/${id}`),
 
   query: (body: QueryRequest, signal?: AbortSignal) =>
     request<QueryResponse>('/api/admin/rag/query', { method: 'POST', json: body, signal }),
