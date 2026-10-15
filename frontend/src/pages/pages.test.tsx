@@ -177,6 +177,57 @@ describe('Customer Records', () => {
     expect(screen.getByRole('link', { name: /Customer Records/ })).toHaveAttribute('href', '/customers')
   })
 
+  it('asks the policy assistant about the customer and shows cited answers', async () => {
+    const user = userEvent.setup()
+    const section = (key: string, title: string) => ({
+      ...answer(),
+      key,
+      title,
+      question: `${title}?`,
+    })
+    const api = mockApi({
+      'GET /api/admin/customers/7': () => ({ body: customerDetail }),
+      'POST /api/admin/customers/7/guidance': () => ({
+        body: {
+          customer_id: 7,
+          months_late: 2,
+          days_overdue_estimate: 60,
+          latest_bill: 3913,
+          default_probability: 0.8231,
+          risk_level: 'high',
+          sections: [section('actions', 'Required actions'), { ...section('escalation', 'Escalation to a human'), ...answer({ answer_mode: 'no_evidence', insufficient_evidence: true, sources: [], answer: 'Not covered.' }) }],
+        },
+      }),
+    })
+    record('/customers/7')
+    await user.click(await screen.findByRole('button', { name: 'Check the policies' }))
+    const guidance = within(screen.getByRole('region', { name: 'Policy guidance' }))
+    expect(await guidance.findByText('Required actions')).toBeInTheDocument()
+    expect(guidance.getByText(/2 months late, treated as about 60 days overdue/)).toBeInTheDocument()
+    expect(guidance.getByRole('link', { name: 'Source 1' })).toHaveAttribute('href', '#guidance-actions-source-1')
+    expect(guidance.getByText('No relevant evidence')).toBeInTheDocument()
+    expect(guidance.getByRole('button', { name: 'Check again' })).toBeEnabled()
+    expect(api.count('POST /api/admin/customers/7/guidance')).toBe(1)
+  })
+
+  it('explains when an account is not overdue, and shows guidance errors', async () => {
+    const user = userEvent.setup()
+    let fail = false
+    mockApi({
+      'GET /api/admin/customers/7': () => ({ body: customerDetail }),
+      'POST /api/admin/customers/7/guidance': () =>
+        fail
+          ? failure(503, 'embeddings_unavailable', 'Embedding model could not be loaded.')()
+          : { body: { customer_id: 7, months_late: 0, days_overdue_estimate: 0, latest_bill: 0, default_probability: 0.1, risk_level: 'low', sections: [] } },
+    })
+    record('/customers/7')
+    await user.click(await screen.findByRole('button', { name: 'Check the policies' }))
+    expect(await screen.findByText(/not overdue, so no collections policy applies/)).toBeInTheDocument()
+    fail = true
+    await user.click(screen.getByRole('button', { name: 'Check again' }))
+    expect(await screen.findByText('Embedding model could not be loaded.')).toBeInTheDocument()
+  })
+
   it('says when a customer has no prediction, or does not exist', async () => {
     mockApi({
       'GET /api/admin/customers/8': () => ({

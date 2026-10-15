@@ -8,6 +8,8 @@ Run from the backend directory with the virtualenv active:
     python -m app.manage list-users
     python -m app.manage import-customers [--csv path/to/data.csv] [--replace]
     python -m app.manage train-model
+    python -m app.manage add-documents ../sample_policies/*_policy.*
+    python -m app.manage evaluate-rag
 
 Sign-up through the web page always creates an ordinary user. Administrators can only be made
 here, by someone who already has access to the server.
@@ -22,9 +24,13 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from . import auth, risk_model
+from . import auth, evaluation, risk_model
 from .config import BACKEND_DIR, Settings
 from .db import Database, EmailTaken
+from .embeddings import build_embedder
+from .extraction import ValidationError
+from .knowledge_base import DuplicateDocument, KnowledgeBase
+from .llm import build_generator
 from .portfolio import DATA_URL, ImportFailed, Portfolio
 
 
@@ -45,8 +51,58 @@ def _existing(db: Database, email: str) -> dict:
     return user
 
 
+def _build_kb(settings: Settings, db: Database) -> KnowledgeBase:
+    return KnowledgeBase(settings, db, build_embedder(settings), build_generator(settings))
+
+
+def _knowledge_base_command(args, kb: KnowledgeBase) -> int:
+    if args.command == "add-documents":
+        failed = 0
+        for path in args.files:
+            try:
+                doc = kb.register_upload(path.name, path.read_bytes())
+            except OSError as exc:
+                print(f"{path}: cannot be read ({exc.strerror}).")
+                failed += 1
+                continue
+            except ValidationError as exc:
+                print(f"{path}: {exc}")
+                failed += 1
+                continue
+            except DuplicateDocument as exc:
+                print(f"{path}: already uploaded as {exc.existing['filename']}, skipped.")
+                continue
+            kb.ingest(doc["id"])
+            doc = kb.db.get_document(doc["id"])
+            if doc["status"] == "indexed":
+                print(f"{path}: indexed, {doc['chunk_count']} chunks.")
+            else:
+                print(f"{path}: failed. {doc['error']}")
+                failed += 1
+        return 1 if failed else 0
+
+    report = evaluation.evaluate(kb, evaluation.load_questions(args.questions))
+    for r in report["results"]:
+        mark = "ok  " if r["retrieved"] and r["answered"] else "MISS"
+        print(f"{mark} {r['question']}")
+        if not r["retrieved"]:
+            print(f"     expected {r['expected_document']}, top source {r['top_document']}")
+        elif not r["answered"]:
+            print(f"     answer ({r['answer_mode']}): {r['answer'][:160]}")
+    n = report["questions"]
+    print(f"\nRetrieval: {report['retrieval_hits']}/{n} questions found the right document first.")
+    if report["generator"]:
+        print(f"Answers:   {report['correct_answers']}/{n} correct ({report['generator']}).")
+    else:
+        print("Answers:   not checked, because no answer model is configured.")
+    return 0
+
+
 def main(
-    argv: list[str] | None = None, db: Database | None = None, models_dir: Path | None = None
+    argv: list[str] | None = None,
+    db: Database | None = None,
+    models_dir: Path | None = None,
+    kb: KnowledgeBase | None = None,
 ) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m app.manage", description=__doc__.split("\n")[0]
@@ -65,6 +121,10 @@ def main(
     data.add_argument("--csv", type=Path, help="a downloaded copy; otherwise it is downloaded")
     data.add_argument("--replace", action="store_true", help="delete the loaded data first")
     commands.add_parser("train-model", help="train the risk model and score every customer")
+    docs = commands.add_parser("add-documents", help="upload and index policy documents")
+    docs.add_argument("files", nargs="+", type=Path)
+    check = commands.add_parser("evaluate-rag", help="ask the test questions and score the answers")
+    check.add_argument("--questions", type=Path, default=evaluation.DEFAULT_QUESTIONS)
     args = parser.parse_args(argv)
 
     load_dotenv(BACKEND_DIR / ".env")
@@ -84,6 +144,8 @@ def main(
             print(f"Imported {count} customers from {args.csv or DATA_URL}.")
             print("Next, score them with: python -m app.manage train-model")
             return 0
+        if args.command in ("add-documents", "evaluate-rag"):
+            return _knowledge_base_command(args, kb or _build_kb(settings, db))
         if args.command == "train-model":
             result = risk_model.train(db, models_dir or settings.models_dir)
             test = result["test"]

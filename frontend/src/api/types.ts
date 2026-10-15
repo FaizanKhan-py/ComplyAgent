@@ -228,3 +228,19 @@ export interface CustomerDetail extends CustomerSummary {
   avg_credit_utilization: number | null
   history: MonthlyRecord[]
 }
+
+export interface GuidanceSection extends QueryResponse {
+  key: 'actions' | 'escalation' | 'hardship' | 'contact'
+  title: string
+  question: string
+}
+
+export interface CustomerGuidance {
+  customer_id: number
+  months_late: number
+  days_overdue_estimate: number
+  latest_bill: number | null
+  default_probability: number | null
+  risk_level: RiskLevel | null
+  sections: GuidanceSection[]
+}

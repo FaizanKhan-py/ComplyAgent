@@ -22,6 +22,7 @@ ADMIN_ROUTES = [
     ("get", "/api/admin/portfolio/summary"),
     ("get", "/api/admin/customers"),
     ("get", "/api/admin/customers/1"),
+    ("post", "/api/admin/customers/1/guidance"),
     ("post", "/api/admin/rag/query"),
 ]
 

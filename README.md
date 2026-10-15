@@ -41,7 +41,7 @@ The knowledge base is separate from the team's MySQL database, which is not requ
 | Section | What it shows |
 |---|---|
 | **Risk Dashboard** | Portfolio totals, customers by predicted risk, the delinquency trend by month, default rate by education, and the model's test scores |
-| **Customer Records** | Filterable list of customers with predicted risk and actual status; each record has account details, the prediction and six months of payment history |
+| **Customer Records** | Filterable list of customers with predicted risk and actual status; each record has account details, the prediction, six months of payment history, and **policy guidance**: what the indexed policies say about that customer's situation, with citations |
 | **AI Assistant** | Policy questions answered with sources. Administrators also get the **Documents** and **Knowledge Base** tabs here |
 
 The Risk Dashboard and Customer Records use the
@@ -79,6 +79,26 @@ What to know about the figures:
   lending or collections decisions is restricted or illegal in many places; treat this as a
   study model.
 - The data is from Taiwan in 2005: amounts are New Taiwan dollars and customers have no names.
+
+### Policies and checking answer quality
+
+```bash
+# from backend/, with the virtualenv active
+python -m app.manage add-documents ../sample_policies/*_policy.*   # upload and index policy files
+python -m app.manage evaluate-rag                                 # ask the test questions, score the answers
+```
+
+`evaluate-rag` asks the questions in `sample_policies/eval_questions.json`. Each names the
+document that should come first and phrases the answer must contain; off-topic questions must
+get no evidence. With the three sample policies, `bge-small` and Ollama `llama3.2` it scored
+17 of 18 for retrieval and for answers. Add a question there whenever you add a policy.
+
+**Policy guidance** (`POST /api/admin/customers/{id}/guidance`) turns a customer's facts into
+four policy questions (required actions, escalation, hardship options, contact rules) and answers
+each one through the same RAG pipeline. No policy rule is written in code, so the guidance
+follows whatever policies are indexed. The data records lateness in whole months, so "2 months
+late" is asked as "about 60 days overdue". With a local model all four answers take about half a
+minute.
 
 ## Accounts and access
 
@@ -299,6 +319,7 @@ always have the shape `{"error": {"code": "...", "message": "..."}}`.
 | GET | `/api/admin/portfolio/summary` | admin | Portfolio totals, the groups behind the Risk Dashboard charts, and the model's scores |
 | GET | `/api/admin/customers` | admin | Customers, paged: `search` (customer number), `risk` (`low`, `medium`, `high`), `actual` (`defaulted`, `paid`), `sort`, `order`, `page`, `page_size` |
 | GET | `/api/admin/customers/{id}` | admin | One customer with their prediction and payment history |
+| POST | `/api/admin/customers/{id}/guidance` | admin | What the policies say about this customer, as four cited answers |
 | POST | `/api/admin/rag/query` | user | Ask a question: `{question, history?, top_k?, min_score?, document_ids?}` |
 
 ## Demo script

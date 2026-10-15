@@ -3,6 +3,7 @@ import type {
   AdminConfig,
   AuthStatus,
   CustomerDetail,
+  CustomerGuidance,
   CustomerList,
   CustomerQuery,
   DeleteResult,
@@ -162,6 +163,8 @@ export const api = {
     return request<CustomerList>(`/api/admin/customers${suffix}`)
   },
   getCustomer: (id: number) => request<CustomerDetail>(`/api/admin/customers/${id}`),
+  customerGuidance: (id: number, signal?: AbortSignal) =>
+    request<CustomerGuidance>(`/api/admin/customers/${id}/guidance`, { method: 'POST', signal }),
 
   query: (body: QueryRequest, signal?: AbortSignal) =>
     request<QueryResponse>('/api/admin/rag/query', { method: 'POST', json: body, signal }),

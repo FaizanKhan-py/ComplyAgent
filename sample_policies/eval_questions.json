@@ -1,0 +1,20 @@
+[
+  {"question": "What hours are we allowed to contact customers?", "document": "customer_contact_policy.md", "answer_contains": ["8", "9"]},
+  {"question": "How many contact attempts can a customer receive in a week?", "document": "customer_contact_policy.md", "answer_contains": ["three"]},
+  {"question": "How long must we wait after a live conversation before contacting the customer again?", "document": "customer_contact_policy.md", "answer_contains": ["48 hours"]},
+  {"question": "Can a voicemail mention the amount of the debt?", "document": "customer_contact_policy.md", "answer_contains": ["not"]},
+  {"question": "When may email or SMS be used to contact a customer?", "document": "customer_contact_policy.md", "answer_contains": ["consent"]},
+  {"question": "What must happen if a customer asks in writing for contact to stop?", "document": "customer_contact_policy.md", "answer_contains": ["two business days"]},
+  {"question": "Who is eligible for a hardship plan?", "document": "hardship_assistance_policy.txt", "answer_contains": ["12 months"]},
+  {"question": "How much can a hardship plan reduce the installment, and for how long?", "document": "hardship_assistance_policy.txt", "answer_contains": ["50", "six months"]},
+  {"question": "Who must approve a hardship plan that cuts the installment by 40 percent?", "document": "hardship_assistance_policy.txt", "answer_contains": ["team lead"]},
+  {"question": "Can an automated agent approve a hardship plan?", "document": "hardship_assistance_policy.txt", "answer_contains": ["recommend"]},
+  {"question": "When does a hardship plan end early?", "document": "hardship_assistance_policy.txt", "answer_contains": ["two consecutive"]},
+  {"question": "Which delinquency stage is an account that is 45 days overdue?", "document": "escalation_policy.pdf", "answer_contains": ["stage 2"]},
+  {"question": "What must a collections officer do in Stage 2?", "document": "escalation_policy.pdf", "answer_contains": ["hardship"]},
+  {"question": "When must an account be escalated to a human?", "document": "escalation_policy.pdf", "answer_contains": ["90 days"]},
+  {"question": "Who has to approve legal action?", "document": "escalation_policy.pdf", "answer_contains": ["head of collections"]},
+  {"question": "How long are escalation records kept?", "document": "escalation_policy.pdf", "answer_contains": ["seven years"]},
+  {"question": "How do I bake sourdough bread?", "document": null},
+  {"question": "What is the capital of France?", "document": null}
+]

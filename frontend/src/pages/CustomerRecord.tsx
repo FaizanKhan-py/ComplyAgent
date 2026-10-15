@@ -1,6 +1,7 @@
 import { Link, useParams } from 'react-router-dom'
 import { api } from '../api/client'
 import type { CustomerDetail } from '../api/types'
+import { PolicyGuidance } from '../components/PolicyGuidance'
 import { ActualBadge, PaymentBadge, RiskBadge } from '../components/RiskBadge'
 import { ErrorState, Loading, PageHeader } from '../components/ui'
 import { useResource } from '../hooks/useResource'
@@ -125,6 +126,8 @@ export function CustomerRecord() {
               </table>
             </div>
           </section>
+
+          <PolicyGuidance key={c.customer_id} customerId={c.customer_id} />
         </>
       ) : null}
     </>

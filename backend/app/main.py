@@ -34,6 +34,7 @@ from .config import BACKEND_DIR, SUPPORTED_EXTENSIONS, Settings
 from .db import Database, EmailTaken
 from .embeddings import Embedder, EmbeddingError, build_embedder
 from .extraction import ValidationError
+from .guidance import customer_guidance
 from .knowledge_base import Busy, DuplicateDocument, KnowledgeBase, NotFound
 from .llm import AnswerGenerator, build_generator
 from .portfolio import SORT_COLUMNS, Portfolio
@@ -531,6 +532,23 @@ def create_app(
         if not customer:
             raise ApiError(404, "not_found", "Customer not found.")
         return customer
+
+    @app.post(
+        "/api/admin/customers/{customer_id}/guidance",
+        response_model=schemas.CustomerGuidance,
+        dependencies=[admin],
+        tags=["portfolio"],
+        responses=ERROR_RESPONSES,
+    )
+    def guidance(customer_id: int):
+        """What the policies say about this customer's situation, with citations."""
+        try:
+            result = customer_guidance(kb, portfolio, customer_id)
+        except EmbeddingError as exc:
+            raise ApiError(503, "embeddings_unavailable", str(exc)) from exc
+        if result is None:
+            raise ApiError(404, "not_found", "Customer not found.")
+        return result
 
     # --- admin: RAG ------------------------------------------------------------------------
 

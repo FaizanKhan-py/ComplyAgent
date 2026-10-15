@@ -285,3 +285,19 @@ class CustomerDetail(CustomerSummary):
     avg_payment_delay: float | None
     avg_credit_utilization: float | None
     history: list[MonthlyRecord]
+
+
+class GuidanceSection(QueryResponse):
+    key: Literal["actions", "escalation", "hardship", "contact"]
+    title: str
+    question: str
+
+
+class CustomerGuidance(BaseModel):
+    customer_id: int
+    months_late: int
+    days_overdue_estimate: int
+    latest_bill: int | None
+    default_probability: float | None
+    risk_level: RiskLevel | None
+    sections: list[GuidanceSection]
