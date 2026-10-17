@@ -1,18 +1,4 @@
 data/
 venv/
 
-# Secrets: only the .env.example templates are committed
-.env
-.env.*
-!.env.example
 
-# Backend
-backend/.venv/
-backend/storage/
-__pycache__/
-.pytest_cache/
-.ruff_cache/
-
-# Frontend
-frontend/node_modules/
-frontend/dist/
