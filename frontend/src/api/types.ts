@@ -244,3 +244,47 @@ export interface CustomerGuidance {
   risk_level: RiskLevel | null
   sections: GuidanceSection[]
 }
+
+export interface PredictionModelInfo {
+  available: boolean
+  message: string | null
+  model_name: string | null
+  features: string[]
+  threshold: number | null
+  test_metrics: Record<string, number> | null
+}
+
+export interface DatasetScores {
+  accuracy: number
+  precision: number
+  recall: number
+  f1: number
+  tn: number
+  fp: number
+  fn: number
+  tp: number
+}
+
+export interface RowPrediction {
+  row: number
+  id: number | null
+  limit_bal: number
+  age: number
+  default_probability: number
+  predicted_default: 0 | 1
+  risk_level: RiskLevel
+  actual_default: 0 | 1 | null
+}
+
+export interface DatasetPrediction {
+  filename: string
+  model_name: string
+  threshold: number
+  rows: number
+  predicted_defaults: number
+  by_risk: Record<RiskLevel, number>
+  scores: DatasetScores | null
+  predictions: RowPrediction[]
+  /** The uploaded file with the target column filled in, ready to download. */
+  csv: string
+}

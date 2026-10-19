@@ -301,3 +301,46 @@ class CustomerGuidance(BaseModel):
     default_probability: float | None
     risk_level: RiskLevel | None
     sections: list[GuidanceSection]
+
+
+class PredictionModelInfo(BaseModel):
+    available: bool
+    message: str | None
+    model_name: str | None = None
+    features: list[str] = []
+    threshold: float | None = None
+    test_metrics: dict[str, float] | None = None
+
+
+class DatasetScores(BaseModel):
+    accuracy: float
+    precision: float
+    recall: float
+    f1: float
+    tn: int
+    fp: int
+    fn: int
+    tp: int
+
+
+class RowPrediction(BaseModel):
+    row: int
+    id: int | None
+    limit_bal: int
+    age: int
+    default_probability: float
+    predicted_default: int
+    risk_level: RiskLevel
+    actual_default: int | None
+
+
+class DatasetPrediction(BaseModel):
+    filename: str
+    model_name: str
+    threshold: float
+    rows: int
+    predicted_defaults: int
+    by_risk: dict[RiskLevel, int]
+    scores: DatasetScores | None
+    predictions: list[RowPrediction]
+    csv: str

@@ -10,6 +10,7 @@ import { Documents } from './pages/Documents'
 import { KnowledgeBase } from './pages/KnowledgeBase'
 import { Login } from './pages/Login'
 import { Playground } from './pages/Playground'
+import { PredictDataset } from './pages/PredictDataset'
 import { RiskDashboard } from './pages/RiskDashboard'
 import { SignUp } from './pages/SignUp'
 
@@ -62,6 +63,7 @@ export default function App() {
             <Route index element={<RiskDashboard />} />
             <Route path="customers" element={<Customers />} />
             <Route path="customers/:customerId" element={<CustomerRecord />} />
+            <Route path="predict" element={<PredictDataset />} />
           </>
         ) : null}
         <Route path="assistant" element={<Assistant showAdminTabs={isAdmin} />}>

@@ -5,6 +5,7 @@ import { useAuth } from '../auth'
 const NAV = [
   { to: '/', label: 'Risk Dashboard', icon: 'chart', end: true, adminOnly: true },
   { to: '/customers', label: 'Customer Records', icon: 'people', end: false, adminOnly: true },
+  { to: '/predict', label: 'Predict Dataset', icon: 'upload', end: false, adminOnly: true },
   { to: '/assistant', label: 'AI Assistant', icon: 'chat', end: false, adminOnly: false },
 ] as const
 
@@ -12,6 +13,7 @@ const ICON_PATHS = {
   chart: 'M4 20V10m5.5 10V4M15 20v-7m5.5 7V8',
   people:
     'M16 20v-1.5a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4V20m6.5-9.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm11.5 9.5v-1.5a4 4 0 0 0-3-3.87m-1.5-11a3.5 3.5 0 0 1 0 6.75',
+  upload: 'M12 15V4m0 0-4 4m4-4 4 4M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3',
   chat: 'M20.5 11.5a8 8 0 0 1-11.7 7.1L3.5 20l1.4-5.3a8 8 0 1 1 15.6-3.2Z',
   menu: 'M4 6h16M4 12h16M4 18h16',
   close: 'M6 6l12 12M18 6 6 18',

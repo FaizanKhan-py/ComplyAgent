@@ -38,6 +38,8 @@ from .guidance import customer_guidance
 from .knowledge_base import Busy, DuplicateDocument, KnowledgeBase, NotFound
 from .llm import AnswerGenerator, build_generator
 from .portfolio import SORT_COLUMNS, Portfolio
+from .predictor import SUPPORTED_EXTENSIONS as DATASET_EXTENSIONS
+from .predictor import PredictionFailed, Predictor
 
 logger = logging.getLogger("complyagent.api")
 
@@ -73,6 +75,7 @@ def create_app(
         generator = build_generator(settings)
     kb = KnowledgeBase(settings, Database(settings.db_path), embedder, generator)
     portfolio = Portfolio(kb.db)
+    predictor = Predictor(settings.models_dir)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -558,6 +561,47 @@ def create_app(
         if result is None:
             raise ApiError(404, "not_found", "Customer not found.")
         return result
+
+    # --- admin: dataset prediction ---------------------------------------------------------
+
+    @app.get(
+        "/api/admin/predict/model",
+        response_model=schemas.PredictionModelInfo,
+        dependencies=[admin],
+        tags=["prediction"],
+    )
+    def prediction_model():
+        """The model saved by the notebook, or why it cannot be used."""
+        return predictor.info()
+
+    @app.post(
+        "/api/admin/predict/dataset",
+        response_model=schemas.DatasetPrediction,
+        dependencies=[admin],
+        tags=["prediction"],
+        responses=ERROR_RESPONSES,
+    )
+    def predict_dataset(file: UploadFile = File(...)):
+        """Scores every row of an uploaded CSV or Excel file and fills in the target column."""
+        if not (file.filename or "").lower().endswith(DATASET_EXTENSIONS):
+            raise ApiError(
+                415,
+                "unsupported_file_type",
+                f"Upload the dataset as a {', '.join(DATASET_EXTENSIONS)} file.",
+            )
+        limit = settings.max_upload_bytes
+        data = file.file.read(limit + 1)
+        if len(data) > limit:
+            raise ApiError(
+                413, "file_too_large", f"The file is larger than {settings.max_upload_mb} MB."
+            )
+        try:
+            return predictor.predict_file(file.filename, data)
+        except PredictionFailed as exc:
+            code = {413: "file_too_large", 503: "model_unavailable"}.get(
+                exc.status_code, "invalid_dataset"
+            )
+            raise ApiError(exc.status_code, code, str(exc)) from exc
 
     # --- admin: RAG ------------------------------------------------------------------------
 

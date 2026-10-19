@@ -6,11 +6,13 @@ import type {
   CustomerGuidance,
   CustomerList,
   CustomerQuery,
+  DatasetPrediction,
   DeleteResult,
   Health,
   KnowledgeBaseStats,
   PolicyDocument,
   PortfolioSummary,
+  PredictionModelInfo,
   QueryRequest,
   QueryResponse,
   RegisterRequest,
@@ -165,6 +167,13 @@ export const api = {
   getCustomer: (id: number) => request<CustomerDetail>(`/api/admin/customers/${id}`),
   customerGuidance: (id: number, signal?: AbortSignal) =>
     request<CustomerGuidance>(`/api/admin/customers/${id}/guidance`, { method: 'POST', signal }),
+
+  predictionModel: () => request<PredictionModelInfo>('/api/admin/predict/model'),
+  predictDataset: (file: File) => {
+    const body = new FormData()
+    body.append('file', file)
+    return request<DatasetPrediction>('/api/admin/predict/dataset', { method: 'POST', body })
+  },
 
   query: (body: QueryRequest, signal?: AbortSignal) =>
     request<QueryResponse>('/api/admin/rag/query', { method: 'POST', json: body, signal }),

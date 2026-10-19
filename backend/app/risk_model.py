@@ -5,7 +5,7 @@ The notebook compares four models and tunes XGBoost with a grid search; this mod
 final model directly, with the hyperparameters the grid search chose. The same seven features,
 the same 70/15/15 stratified split and the same class weighting are used.
 
-It needs scikit-learn and xgboost (requirements-ml.txt). The API itself does not: it only reads
+It needs scikit-learn and xgboost (requirements.txt). The customer pages do not: they only read
 the predictions this module saves.
 """
 
