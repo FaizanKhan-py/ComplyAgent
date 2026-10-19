@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { useAuth } from './auth'
 import { AuthShell } from './components/AuthShell'
@@ -16,6 +17,20 @@ import { RiskDashboard } from './pages/RiskDashboard'
 import { SignUp } from './pages/SignUp'
 
 /**
+ * Shown while a reload asks the server who is signed in. Not the sign-in frame: that made the
+ * login page flash before the app appeared. The spinner waits a moment, so a quick check shows
+ * nothing at all.
+ */
+function SessionCheck() {
+  const [slow, setSlow] = useState(false)
+  useEffect(() => {
+    const timer = setTimeout(() => setSlow(true), 300)
+    return () => clearTimeout(timer)
+  }, [])
+  return <div className="session-check">{slow ? <Loading label="Connecting to ComplyAgent…" /> : null}</div>
+}
+
+/**
  * These guards only decide what to show. The API enforces the same rules on every request, so
  * changing the URL or the page state by hand does not give access to anything.
  */
@@ -23,13 +38,8 @@ export default function App() {
   const { state, retry } = useAuth()
   const location = useLocation()
 
-  if (state.phase === 'checking') {
-    return (
-      <AuthShell>
-        <Loading label="Connecting to ComplyAgent…" />
-      </AuthShell>
-    )
-  }
+  if (state.phase === 'checking') return <SessionCheck />
+
   if (state.phase === 'unreachable') {
     return (
       <AuthShell>

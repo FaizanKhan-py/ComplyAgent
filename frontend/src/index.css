@@ -1019,3 +1019,6 @@ input[aria-invalid='true'] { border-color: var(--error); box-shadow: 0 0 0 3px v
   .spinner { animation-duration: 2.4s !important; animation-iteration-count: infinite !important; }
   .layer { transform: none !important; }
 }
+
+/* Reload, before the session check answers: an empty page, then a spinner if it is slow. */
+.session-check { min-height: 100vh; display: grid; place-items: center; }

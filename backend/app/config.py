@@ -60,6 +60,7 @@ class Settings:
     ollama_num_ctx: int | None = None  # None: Ollama's own default context window
     llm_timeout_seconds: float = 60.0
     allow_registration: bool = True
+    admin_emails: frozenset[str] = frozenset()  # sign-ups from these addresses become admins
     session_ttl_hours: int = 12
     cookie_secure: bool | None = None  # None: on in production, off in development
     login_max_attempts: int = 5  # failed sign-ins per email and client before a lock-out
@@ -115,6 +116,7 @@ class Settings:
     @classmethod
     def from_env(cls) -> Settings:
         origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+        admins = {e.strip().lower() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()}
         storage = os.getenv("STORAGE_DIR", "").strip()
         kwargs: dict = {}
         if origins:
@@ -138,6 +140,7 @@ class Settings:
             ollama_num_ctx=_opt_int("OLLAMA_NUM_CTX"),
             llm_timeout_seconds=float(_int("LLM_TIMEOUT_SECONDS", 60)),
             allow_registration=bool(_bool("ALLOW_REGISTRATION", True)),
+            admin_emails=frozenset(admins),
             session_ttl_hours=_int("SESSION_TTL_HOURS", 12),
             cookie_secure=_bool("COOKIE_SECURE", None),
             login_max_attempts=_int("LOGIN_MAX_ATTEMPTS", 5),

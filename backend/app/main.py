@@ -235,7 +235,8 @@ def create_app(
         responses=ERROR_RESPONSES,
     )
     def register(body: schemas.RegisterRequest, request: Request):
-        """Creates an ordinary account. The role is never taken from the request."""
+        """Creates an account. The role is never taken from the request: it is admin only for
+        addresses listed in ADMIN_EMAILS, otherwise user."""
         _check_origin(request)
         if not settings.allow_registration:
             raise ApiError(403, "registration_closed", "Sign-up is turned off on this server.")
@@ -249,7 +250,8 @@ def create_app(
         except auth.AuthError as exc:
             raise ApiError(422, exc.code, exc.message) from exc
         try:
-            user = kb.db.create_user(email, full_name, auth.hash_password(body.password), "user")
+            role = "admin" if email in settings.admin_emails else "user"
+            user = kb.db.create_user(email, full_name, auth.hash_password(body.password), role)
         except EmailTaken:
             raise ApiError(
                 409, "email_taken", "An account with this email address already exists."

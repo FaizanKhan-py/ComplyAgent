@@ -227,6 +227,15 @@ def test_a_successful_login_clears_the_failure_count(anon):
         assert ok.status_code == 200
 
 
+def test_sign_up_from_an_admin_email_creates_an_admin(tmp_path):
+    settings = Settings(storage_dir=tmp_path, admin_emails=frozenset({"ada@example.com"}))
+    with TestClient(create_app(settings, embedder=HashingEmbedder(), generator=None)) as client:
+        admin = client.post("/api/auth/register", json={**ADA, "email": "ADA@example.com"})
+        other = client.post("/api/auth/register", json={**ADA, "email": "grace@example.com"})
+    assert admin.json()["role"] == "admin"
+    assert other.json()["role"] == "user"
+
+
 def test_sign_up_is_rate_limited_per_client(tmp_path):
     settings = Settings(storage_dir=tmp_path, register_max_per_hour=3)
     with TestClient(create_app(settings, embedder=HashingEmbedder(), generator=None)) as client:

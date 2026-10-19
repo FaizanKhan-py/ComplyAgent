@@ -11,8 +11,9 @@ Run from the backend directory with the virtualenv active:
     python -m app.manage add-documents ../sample_policies/*_policy.*
     python -m app.manage evaluate-rag
 
-Sign-up through the web page always creates an ordinary user. Administrators can only be made
-here, by someone who already has access to the server.
+Sign-up through the web page creates an ordinary user, unless the address is listed in
+ADMIN_EMAILS. Otherwise administrators can only be made here, by someone who already has
+access to the server.
 """
 
 from __future__ import annotations
