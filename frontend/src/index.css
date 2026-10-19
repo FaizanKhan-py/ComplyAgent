@@ -84,8 +84,17 @@ code { background: var(--surface-2); padding: 0.1em 0.35em; border-radius: 4px; 
 .sidebar {
   background: var(--sidebar); color: var(--sidebar-text);
   display: flex; flex-direction: column; gap: 20px; padding: 20px 14px;
-  position: sticky; top: 0; height: 100vh;
+  position: sticky; top: 0; height: 100vh; height: 100dvh; overflow-y: auto;
 }
+.sidebar-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.sidebar-panel { display: flex; flex-direction: column; gap: 20px; flex: 1; min-height: 0; }
+.menu-toggle {
+  display: none; place-items: center; width: 40px; height: 40px; flex: none; padding: 0;
+  border: 1px solid #3a4c57; border-radius: 8px; background: transparent; color: var(--sidebar-text); cursor: pointer;
+}
+.menu-toggle:hover { background: rgb(255 255 255 / 8%); }
+.menu-toggle:focus-visible { outline-color: #7fe0d6; }
+.menu-toggle .nav-icon { width: 20px; height: 20px; }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 1.05rem; padding: 0 8px; }
 .brand-lg { font-size: 1.25rem; padding: 0; color: var(--text); }
 .brand-mark {
@@ -383,13 +392,20 @@ input[aria-invalid='true'] { border-color: var(--error); }
 }
 @media (max-width: 760px) {
   .shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }
-  .sidebar { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 12px; }
-  .sidebar nav { order: 3; flex-basis: 100%; overflow-x: auto; }
-  .nav { flex-direction: row; gap: 4px; }
-  .nav-link { white-space: nowrap; padding: 8px 10px; }
-  .sidebar-foot { margin: 0 0 0 auto; display: flex; align-items: center; gap: 10px; }
-  .account { margin-bottom: 0; text-align: right; max-width: 46vw; }
-  .account .small:last-child { display: none; }
+  /* The sidebar becomes a sticky top bar; the links and account drop down from a menu button. */
+  .sidebar { z-index: 20; height: auto; gap: 0; padding: 8px 16px; overflow: visible; }
+  .menu-toggle { display: inline-grid; }
+  .sidebar-panel {
+    display: none; gap: 12px; padding: 10px 0 6px;
+    max-height: calc(100dvh - 56px); overflow-y: auto;
+  }
+  .sidebar-open .sidebar-panel { display: flex; }
+  .nav-link { min-height: 44px; }
+  .sidebar-foot {
+    margin: 0; padding: 12px 8px 0; border-top: 1px solid #2a3a44;
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  }
+  .account { margin-bottom: 0; }
   .main { padding: 18px 16px 40px; }
   .details > div { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .settings-grid { grid-template-columns: minmax(0, 1fr); }
