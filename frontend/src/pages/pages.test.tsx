@@ -7,6 +7,7 @@ import { Customers } from './Customers'
 import { Documents } from './Documents'
 import { KnowledgeBase } from './KnowledgeBase'
 import { Playground } from './Playground'
+import { PredictDataset } from './PredictDataset'
 import { RiskDashboard } from './RiskDashboard'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -527,5 +528,76 @@ describe('AI Assistant', () => {
     expect(await screen.findByText('Embedding model could not be loaded.')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Retry' }))
     expect(await screen.findByText('Generated answer')).toBeInTheDocument()
+  })
+})
+
+describe('Predict Dataset', () => {
+  const prediction = (row: number, probability: number, actual: 0 | 1 | null) => ({
+    row,
+    id: row,
+    limit_bal: 50000,
+    age: 30,
+    default_probability: probability,
+    predicted_default: probability >= 0.5 ? 1 : 0,
+    risk_level: probability >= 0.7 ? 'high' : probability >= 0.4 ? 'medium' : 'low',
+    actual_default: actual,
+  })
+  const model = {
+    available: true,
+    message: null,
+    model_name: 'XGBoost (tuned)',
+    features: ['LIMIT_BAL', 'AGE'],
+    threshold: 0.5,
+    test_metrics: { roc_auc: 0.769, recall: 0.62, accuracy: 0.74 },
+  }
+
+  it('scores an uploaded dataset and shows the predicted target for every row', async () => {
+    const user = userEvent.setup({ applyAccept: false })
+    const api = mockApi({
+      'GET /api/admin/predict/model': () => ({ body: model }),
+      'POST /api/admin/predict/dataset': () => ({
+        body: {
+          filename: 'customers.csv',
+          model_name: 'XGBoost (tuned)',
+          threshold: 0.5,
+          rows: 3,
+          predicted_defaults: 1,
+          by_risk: { high: 1, medium: 0, low: 2 },
+          scores: { accuracy: 2 / 3, precision: 1, recall: 0.5, f1: 0.67, tn: 1, fp: 0, fn: 1, tp: 1 },
+          predictions: [prediction(1, 0.82, 1), prediction(2, 0.1, 0), prediction(3, 0.2, 1)],
+          csv: 'ID,Y\n1,1\n',
+        },
+      }),
+    })
+    page(<PredictDataset />)
+    expect(await screen.findByText('0.769', { exact: false })).toBeInTheDocument()
+    const input = screen.getByLabelText('Choose a dataset to score')
+
+    await user.upload(input, new File(['x'], 'notes.txt'))
+    expect(await screen.findByText(/“notes.txt” is not a CSV or Excel file/)).toBeInTheDocument()
+    expect(api.count('POST /api/admin/predict/dataset')).toBe(0)
+
+    await user.upload(input, new File(['ID,X1'], 'customers.csv'))
+    const summary = within(await screen.findByRole('region', { name: 'Prediction summary' }))
+    expect(summary.getByText('Rows scored').nextSibling).toHaveTextContent('3')
+    expect(summary.getByText('Accuracy vs. actual').nextSibling).toHaveTextContent('66.7%')
+    expect(screen.getAllByText('0 · Will not default')).toHaveLength(2)
+    expect(screen.getByText('1 · Will default')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Download CSV with target column' })).toBeInTheDocument()
+
+    await user.selectOptions(screen.getByLabelText('Predicted risk'), 'high')
+    expect(screen.queryByText('0 · Will not default')).not.toBeInTheDocument()
+    expect(screen.getByText('Showing 1–1 of 1')).toBeInTheDocument()
+  })
+
+  it('explains how to create the model when the notebook has not saved one', async () => {
+    mockApi({
+      'GET /api/admin/predict/model': () => ({
+        body: { ...model, available: false, message: 'No trained model found. Run the notebook.' },
+      }),
+    })
+    page(<PredictDataset />)
+    expect(await screen.findByText('No trained model found. Run the notebook.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Choose file' })).toBeDisabled()
   })
 })

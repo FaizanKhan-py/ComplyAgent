@@ -1,3 +1,4 @@
-# Only for `python -m app.manage train-model`. The API runs without these.
+# Now part of requirements.txt (the API loads the notebook's saved model). Kept so existing
+# setup steps still work.
 scikit-learn>=1.5
 xgboost>=2.1

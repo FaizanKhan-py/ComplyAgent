@@ -4,6 +4,9 @@ import { BrowserRouter } from 'react-router-dom'
 import App from './App.tsx'
 import { AuthProvider } from './auth.tsx'
 import './index.css'
+import { installMagneticButtons } from './lib/motion'
+
+installMagneticButtons()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

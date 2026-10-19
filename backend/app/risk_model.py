@@ -5,13 +5,14 @@ The notebook compares four models and tunes XGBoost with a grid search; this mod
 final model directly, with the hyperparameters the grid search chose. The same seven features,
 the same 70/15/15 stratified split and the same class weighting are used.
 
-It needs scikit-learn and xgboost (requirements-ml.txt). The API itself does not: it only reads
+It needs scikit-learn and xgboost (requirements.txt). The customer pages do not: they only read
 the predictions this module saves.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -43,6 +44,8 @@ HYPERPARAMETERS = {
 THRESHOLD = 0.5
 SEED = 42
 
+logger = logging.getLogger(__name__)
+
 
 class TrainingFailed(Exception):
     pass
@@ -54,16 +57,49 @@ def load_features(db: Database) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         rows = conn.execute(f"{FEATURES_SQL} GROUP BY c.customer_id ORDER BY c.customer_id")
         rows = rows.fetchall()
     ids = np.array([r["customer_id"] for r in rows])
-    matrix = np.array(
-        [
-            [
-                float(r["sex"] == "Male") if name == "sex_male" else float(r[name])
-                for name in FEATURES
-            ]
-            for r in rows
-        ]
-    ).reshape(len(rows), len(FEATURES))
+    matrix = np.array([_vector(r, FEATURES) for r in rows]).reshape(len(rows), len(FEATURES))
     return ids, matrix, np.array([r["default_next_month"] for r in rows])
+
+
+def _vector(row, names: list[str]) -> list[float]:
+    return [
+        float(row["sex"] == "Male") if name == "sex_male" else float(row[name]) for name in names
+    ]
+
+
+def score_customer(db: Database, models_dir: Path, customer_id: int) -> bool:
+    """Score one customer with the latest trained model, as `train` scores everyone.
+
+    Returns False, leaving the customer unscored, when no model has been trained yet or the
+    model cannot be loaded here. The customer is stored either way.
+    """
+    path = models_dir / MODEL_FILE
+    with db.connect() as conn:
+        run = conn.execute(
+            "SELECT run_id, features FROM model_runs ORDER BY run_id DESC LIMIT 1"
+        ).fetchone()
+        row = conn.execute(
+            f"{FEATURES_SQL} WHERE c.customer_id = ? GROUP BY c.customer_id", (customer_id,)
+        ).fetchone()
+    if not run or not row or not path.is_file():
+        return False
+    try:
+        from xgboost import XGBClassifier
+
+        model = XGBClassifier()
+        model.load_model(path)
+        vector = np.array([_vector(row, json.loads(run["features"]))])
+        probability = float(model.predict_proba(vector)[0, 1])
+    except Exception:  # missing package or unreadable model file: keep the customer, unscored
+        logger.exception("Could not score customer %s", customer_id)
+        return False
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO predictions (customer_id, run_id, default_probability, "
+            "predicted_default) VALUES (?, ?, ?, ?)",
+            (customer_id, run["run_id"], round(probability, 5), int(probability >= THRESHOLD)),
+        )
+    return True
 
 
 def _scores(y_true: np.ndarray, probability: np.ndarray) -> dict:

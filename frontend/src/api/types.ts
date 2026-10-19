@@ -229,6 +229,33 @@ export interface CustomerDetail extends CustomerSummary {
   history: MonthlyRecord[]
 }
 
+/** One month as the "Add customer" form sends it. */
+export interface MonthInput {
+  repayment_status: number
+  bill_amt: number
+  pay_amt: number
+}
+
+/** A customer entered by hand, in the shape of a row of the UCI dataset. */
+export interface CustomerCreate {
+  /** Leave out to use the next free number. */
+  customer_id?: number
+  limit_bal: number
+  sex: 'Male' | 'Female'
+  education_code: number
+  marriage: 'Married' | 'Single' | 'Other'
+  age: number
+  default_next_month: boolean
+  /** Six months, most recent first. */
+  history: MonthInput[]
+}
+
+export interface CustomerCreated {
+  customer: CustomerDetail
+  /** False when no model has been trained yet, so the customer has no prediction. */
+  scored: boolean
+}
+
 export interface GuidanceSection extends QueryResponse {
   key: 'actions' | 'escalation' | 'hardship' | 'contact'
   title: string
@@ -243,4 +270,48 @@ export interface CustomerGuidance {
   default_probability: number | null
   risk_level: RiskLevel | null
   sections: GuidanceSection[]
+}
+
+export interface PredictionModelInfo {
+  available: boolean
+  message: string | null
+  model_name: string | null
+  features: string[]
+  threshold: number | null
+  test_metrics: Record<string, number> | null
+}
+
+export interface DatasetScores {
+  accuracy: number
+  precision: number
+  recall: number
+  f1: number
+  tn: number
+  fp: number
+  fn: number
+  tp: number
+}
+
+export interface RowPrediction {
+  row: number
+  id: number | null
+  limit_bal: number
+  age: number
+  default_probability: number
+  predicted_default: 0 | 1
+  risk_level: RiskLevel
+  actual_default: 0 | 1 | null
+}
+
+export interface DatasetPrediction {
+  filename: string
+  model_name: string
+  threshold: number
+  rows: number
+  predicted_defaults: number
+  by_risk: Record<RiskLevel, number>
+  scores: DatasetScores | null
+  predictions: RowPrediction[]
+  /** The uploaded file with the target column filled in, ready to download. */
+  csv: string
 }

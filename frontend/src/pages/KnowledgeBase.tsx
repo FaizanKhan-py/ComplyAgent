@@ -85,6 +85,7 @@ export function KnowledgeBase() {
     <>
       <PageHeader
         title="Knowledge Base"
+        eyebrow="Retrieval index"
         description="What is indexed, how it was indexed, and whether the RAG service is healthy."
         actions={
           <>

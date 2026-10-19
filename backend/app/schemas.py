@@ -287,6 +287,34 @@ class CustomerDetail(CustomerSummary):
     history: list[MonthlyRecord]
 
 
+class MonthInput(BaseModel):
+    repayment_status: int = Field(
+        ge=-2, le=9, description="-2 no spending, -1 paid in full, 0 minimum paid, n months late"
+    )
+    bill_amt: int = Field(ge=-100_000_000, le=100_000_000)
+    pay_amt: int = Field(ge=0, le=100_000_000)
+
+
+class CustomerCreate(BaseModel):
+    """One customer entered by hand, in the same shape as a row of the UCI dataset."""
+
+    customer_id: int | None = Field(default=None, ge=1, le=2_000_000_000)
+    limit_bal: int = Field(gt=0, le=100_000_000)
+    sex: Literal["Male", "Female"]
+    education_code: int = Field(ge=1, le=4)
+    marriage: Literal["Married", "Single", "Other"]
+    age: int = Field(ge=18, le=120)
+    default_next_month: bool
+    history: list[MonthInput] = Field(
+        min_length=6, max_length=6, description="Six months, most recent first."
+    )
+
+
+class CustomerCreated(BaseModel):
+    customer: CustomerDetail
+    scored: bool
+
+
 class GuidanceSection(QueryResponse):
     key: Literal["actions", "escalation", "hardship", "contact"]
     title: str
@@ -301,3 +329,46 @@ class CustomerGuidance(BaseModel):
     default_probability: float | None
     risk_level: RiskLevel | None
     sections: list[GuidanceSection]
+
+
+class PredictionModelInfo(BaseModel):
+    available: bool
+    message: str | None
+    model_name: str | None = None
+    features: list[str] = []
+    threshold: float | None = None
+    test_metrics: dict[str, float] | None = None
+
+
+class DatasetScores(BaseModel):
+    accuracy: float
+    precision: float
+    recall: float
+    f1: float
+    tn: int
+    fp: int
+    fn: int
+    tp: int
+
+
+class RowPrediction(BaseModel):
+    row: int
+    id: int | None
+    limit_bal: int
+    age: int
+    default_probability: float
+    predicted_default: int
+    risk_level: RiskLevel
+    actual_default: int | None
+
+
+class DatasetPrediction(BaseModel):
+    filename: str
+    model_name: str
+    threshold: float
+    rows: int
+    predicted_defaults: int
+    by_risk: dict[RiskLevel, int]
+    scores: DatasetScores | None
+    predictions: list[RowPrediction]
+    csv: str

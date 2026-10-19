@@ -1,9 +1,10 @@
-import { Link, useParams } from 'react-router-dom'
+import { Link, useLocation, useParams } from 'react-router-dom'
 import { api } from '../api/client'
 import type { CustomerDetail } from '../api/types'
 import { PolicyGuidance } from '../components/PolicyGuidance'
+import { PaymentStrip, ProbabilityGauge } from '../components/visuals'
 import { ActualBadge, PaymentBadge, RiskBadge } from '../components/RiskBadge'
-import { ErrorState, Loading, PageHeader } from '../components/ui'
+import { ErrorState, Loading, Notice, PageHeader } from '../components/ui'
 import { useResource } from '../hooks/useResource'
 import { formatMoney, formatPercent } from '../lib/format'
 
@@ -15,8 +16,11 @@ const SPLIT_NOTE = {
 
 function Prediction({ c }: { c: CustomerDetail }) {
   return (
-    <section className="card" aria-label="Risk prediction">
+    <section className="card card-verdict" aria-label="Risk prediction">
       <h2>Risk prediction</h2>
+      {c.default_probability !== null && c.risk_level !== null ? (
+        <ProbabilityGauge probability={c.default_probability} level={c.risk_level} />
+      ) : null}
       {c.default_probability === null ? (
         <p className="muted">This customer has not been scored. Train the model to see a prediction.</p>
       ) : (
@@ -50,6 +54,8 @@ export function CustomerRecord() {
   const id = Number(useParams().customerId)
   const record = useResource(() => api.getCustomer(id))
   const c = record.data
+  // Set by the "Add customer" page when it brings the person here after saving.
+  const created = useLocation().state as { created?: boolean; scored?: boolean } | null
 
   return (
     <>
@@ -62,7 +68,13 @@ export function CustomerRecord() {
         <ErrorState error={record.error} onRetry={record.refresh} />
       ) : c ? (
         <>
-          <PageHeader title={`Customer ${c.customer_id}`} description="Credit card account" />
+          {created?.created ? (
+            <Notice tone="ok">
+              Customer {c.customer_id} was added to the database
+              {created.scored ? ' and scored by the risk model.' : '. Train the model to give them a prediction.'}
+            </Notice>
+          ) : null}
+          <PageHeader title={`Customer ${c.customer_id}`} eyebrow="Account file" description="Credit card account" />
           <div className="grid grid-2">
             <section className="card" aria-label="Account details">
               <h2>Account details</h2>
@@ -101,6 +113,7 @@ export function CustomerRecord() {
                   : `Paid in full ${formatPercent(c.on_time_payment_rate)} of the months that count · average delay ${c.avg_payment_delay.toFixed(1)} months · average ${formatPercent(c.avg_credit_utilization)} of the credit limit used.`}
               </p>
             </div>
+            <PaymentStrip months={c.history.map((h) => ({ month: h.month, status: h.repayment_status }))} />
             <div className="table-wrap">
               <table className="table">
                 <thead>

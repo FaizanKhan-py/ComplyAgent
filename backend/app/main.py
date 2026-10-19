@@ -26,7 +26,7 @@ from fastapi import (
 )
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import auth, schemas
@@ -37,7 +37,10 @@ from .extraction import ValidationError
 from .guidance import customer_guidance
 from .knowledge_base import Busy, DuplicateDocument, KnowledgeBase, NotFound
 from .llm import AnswerGenerator, build_generator
-from .portfolio import SORT_COLUMNS, Portfolio
+from .portfolio import SORT_COLUMNS, CustomerExists, Portfolio
+from .predictor import SUPPORTED_EXTENSIONS as DATASET_EXTENSIONS
+from .predictor import PredictionFailed, Predictor
+from .risk_model import score_customer
 
 logger = logging.getLogger("complyagent.api")
 
@@ -73,6 +76,7 @@ def create_app(
         generator = build_generator(settings)
     kb = KnowledgeBase(settings, Database(settings.db_path), embedder, generator)
     portfolio = Portfolio(kb.db)
+    predictor = Predictor(settings.models_dir)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -205,6 +209,15 @@ def create_app(
         return {k: row.get(k) for k in schemas.User.model_fields}
 
     # --- public ----------------------------------------------------------------------------
+
+    # This server is API-only (the UI is the Vite app); send browsers that land on it to the docs.
+    @app.get("/", include_in_schema=False)
+    def root():
+        return RedirectResponse("/docs")
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon():
+        return Response(status_code=204)
 
     @app.get("/api/health", response_model=schemas.PublicHealth, tags=["public"])
     def public_health():
@@ -520,6 +533,27 @@ def create_app(
             search, risk, actual, sort, order == "desc", page, page_size
         )
 
+    @app.post(
+        "/api/admin/customers",
+        response_model=schemas.CustomerCreated,
+        status_code=201,
+        dependencies=[admin],
+        tags=["portfolio"],
+        responses=ERROR_RESPONSES,
+    )
+    def create_customer(body: schemas.CustomerCreate):
+        """Add one customer by hand, then score them with the trained model if there is one."""
+        try:
+            customer_id = portfolio.add_customer(body.model_dump())
+        except CustomerExists as exc:
+            raise ApiError(
+                409,
+                "customer_exists",
+                f"Customer {exc.customer_id} already exists. Use another number or leave it blank.",
+            ) from exc
+        scored = score_customer(kb.db, settings.models_dir, customer_id)
+        return {"customer": portfolio.get_customer(customer_id), "scored": scored}
+
     @app.get(
         "/api/admin/customers/{customer_id}",
         response_model=schemas.CustomerDetail,
@@ -549,6 +583,47 @@ def create_app(
         if result is None:
             raise ApiError(404, "not_found", "Customer not found.")
         return result
+
+    # --- admin: dataset prediction ---------------------------------------------------------
+
+    @app.get(
+        "/api/admin/predict/model",
+        response_model=schemas.PredictionModelInfo,
+        dependencies=[admin],
+        tags=["prediction"],
+    )
+    def prediction_model():
+        """The model saved by the notebook, or why it cannot be used."""
+        return predictor.info()
+
+    @app.post(
+        "/api/admin/predict/dataset",
+        response_model=schemas.DatasetPrediction,
+        dependencies=[admin],
+        tags=["prediction"],
+        responses=ERROR_RESPONSES,
+    )
+    def predict_dataset(file: UploadFile = File(...)):
+        """Scores every row of an uploaded CSV or Excel file and fills in the target column."""
+        if not (file.filename or "").lower().endswith(DATASET_EXTENSIONS):
+            raise ApiError(
+                415,
+                "unsupported_file_type",
+                f"Upload the dataset as a {', '.join(DATASET_EXTENSIONS)} file.",
+            )
+        limit = settings.max_upload_bytes
+        data = file.file.read(limit + 1)
+        if len(data) > limit:
+            raise ApiError(
+                413, "file_too_large", f"The file is larger than {settings.max_upload_mb} MB."
+            )
+        try:
+            return predictor.predict_file(file.filename, data)
+        except PredictionFailed as exc:
+            code = {413: "file_too_large", 503: "model_unavailable"}.get(
+                exc.status_code, "invalid_dataset"
+            )
+            raise ApiError(exc.status_code, code, str(exc)) from exc
 
     # --- admin: RAG ------------------------------------------------------------------------
 

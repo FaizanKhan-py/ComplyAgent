@@ -134,6 +134,7 @@ export function Playground({ showModelStatus = true }: { showModelStatus?: boole
     <div className="playground">
       <PageHeader
         title="AI Assistant"
+        eyebrow="Policy desk"
         description="Ask policy questions. Answers come from the uploaded policies and show their sources."
         actions={
           <button type="button" className="btn" onClick={newConversation} disabled={turns.length === 0}>

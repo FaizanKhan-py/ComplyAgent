@@ -3,6 +3,7 @@ import { useAuth } from './auth'
 import { AuthShell } from './components/AuthShell'
 import { Layout } from './components/Layout'
 import { ErrorState, Loading } from './components/ui'
+import { AddCustomer } from './pages/AddCustomer'
 import { Assistant } from './pages/Assistant'
 import { CustomerRecord } from './pages/CustomerRecord'
 import { Customers } from './pages/Customers'
@@ -10,6 +11,7 @@ import { Documents } from './pages/Documents'
 import { KnowledgeBase } from './pages/KnowledgeBase'
 import { Login } from './pages/Login'
 import { Playground } from './pages/Playground'
+import { PredictDataset } from './pages/PredictDataset'
 import { RiskDashboard } from './pages/RiskDashboard'
 import { SignUp } from './pages/SignUp'
 
@@ -61,7 +63,9 @@ export default function App() {
           <>
             <Route index element={<RiskDashboard />} />
             <Route path="customers" element={<Customers />} />
+            <Route path="customers/new" element={<AddCustomer />} />
             <Route path="customers/:customerId" element={<CustomerRecord />} />
+            <Route path="predict" element={<PredictDataset />} />
           </>
         ) : null}
         <Route path="assistant" element={<Assistant showAdminTabs={isAdmin} />}>

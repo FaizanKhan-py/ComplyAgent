@@ -157,7 +157,13 @@ export function Customers() {
     <>
       <PageHeader
         title="Customer Records"
+        eyebrow="Accounts register"
         description="Account details, payment history, risk predictions and actual status."
+        actions={
+          <Link className="btn btn-primary" to="/customers/new">
+            + Add customer
+          </Link>
+        }
       />
       <section className="card" aria-label="Customers">
         <div className="filters">
