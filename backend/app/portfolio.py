@@ -12,6 +12,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import sqlite3
 from pathlib import Path
 
 import httpx
@@ -72,8 +73,20 @@ _CUSTOMER_ROWS = f"""
 """
 
 
+_INSERT_CUSTOMER = (
+    "INSERT INTO customers (customer_id, limit_bal, sex, education_code, education, "
+    "marriage, age, default_next_month, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+)
+
+
 class ImportFailed(Exception):
     """The data cannot be loaded; the message says which row and why."""
+
+
+class CustomerExists(Exception):
+    def __init__(self, customer_id: int) -> None:
+        super().__init__(f"Customer {customer_id} already exists.")
+        self.customer_id = customer_id
 
 
 def risk_level(probability: float | None) -> str | None:
@@ -134,11 +147,7 @@ class Portfolio:
                     )
                 conn.execute("DELETE FROM customers")  # history and predictions cascade
                 conn.execute("DELETE FROM model_runs")
-            conn.executemany(
-                "INSERT INTO customers (customer_id, limit_bal, sex, education_code, education, "
-                "marriage, age, default_next_month, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                customers,
-            )
+            conn.executemany(_INSERT_CUSTOMER, customers)
             conn.executemany("INSERT INTO monthly_history VALUES (?, ?, ?, ?, ?)", history)
         return len(customers)
 
@@ -181,6 +190,46 @@ class Portfolio:
                     _int(row, f"PAY_AMT{month}", line),
                 )
             )
+
+    def add_customer(self, record: dict) -> int:
+        """Store one customer entered by hand, with six months of history (most recent first).
+
+        The record has the same fields as an imported row, already validated by the API schema.
+        Without a customer number, the next free one is used. Returns the customer number.
+        """
+        with self.db.connect() as conn:
+            customer_id = (
+                record.get("customer_id")
+                or conn.execute(
+                    "SELECT COALESCE(MAX(customer_id), 0) + 1 FROM customers"
+                ).fetchone()[0]
+            )
+            code = record["education_code"]
+            try:
+                conn.execute(
+                    _INSERT_CUSTOMER,
+                    (
+                        customer_id,
+                        record["limit_bal"],
+                        record["sex"],
+                        code,
+                        EDUCATION.get(code, EDUCATION[4]),
+                        record["marriage"],
+                        record["age"],
+                        int(record["default_next_month"]),
+                        now_iso(),
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                raise CustomerExists(customer_id) from None
+            conn.executemany(
+                "INSERT INTO monthly_history VALUES (?, ?, ?, ?, ?)",
+                [
+                    (customer_id, month, m["repayment_status"], m["bill_amt"], m["pay_amt"])
+                    for month, m in enumerate(record["history"], start=1)
+                ],
+            )
+        return customer_id
 
     # --- dashboard -------------------------------------------------------------------------
 

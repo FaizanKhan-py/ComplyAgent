@@ -2,6 +2,7 @@ import { useMemo, useRef, useState, type DragEvent } from 'react'
 import { api } from '../api/client'
 import type { DatasetPrediction, PredictionModelInfo, RiskLevel } from '../api/types'
 import { RiskBadge } from '../components/RiskBadge'
+import { RiskSpectrum } from '../components/visuals'
 import { Badge, EmptyState, ErrorState, Loading, Notice, PageHeader, StatCard } from '../components/ui'
 import { useResource } from '../hooks/useResource'
 import { errorMessage, formatMoney, formatNumber, formatPercent } from '../lib/format'
@@ -84,6 +85,14 @@ function Results({ result }: { result: DatasetPrediction }) {
         ) : (
           <StatCard label="Accuracy vs. actual" value="—" hint="The file had no actual target values" />
         )}
+      </section>
+
+      <section className="card card-feature" aria-labelledby="mix-title">
+        <div>
+          <h2 id="mix-title">Risk mix of this file</h2>
+          <p className="muted small">Every scored row, placed by its predicted chance of default.</p>
+        </div>
+        <RiskSpectrum counts={result.by_risk} />
       </section>
 
       <section className="card" aria-labelledby="rows-title">
@@ -214,6 +223,7 @@ export function PredictDataset() {
     <>
       <PageHeader
         title="Predict Dataset"
+        eyebrow="Batch scoring"
         description="Upload a customer dataset and the notebook's model predicts “default payment next month” for every row."
       />
 
@@ -243,6 +253,7 @@ export function PredictDataset() {
             <Loading label={`Scoring every row of ${running}…`} />
           ) : (
             <>
+              <span className="dropzone-icon" aria-hidden="true" />
               <p>
                 <strong>Drop a CSV or Excel file here</strong> or
               </p>

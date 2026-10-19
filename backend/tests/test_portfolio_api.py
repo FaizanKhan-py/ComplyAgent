@@ -220,3 +220,85 @@ def test_training_scores_every_customer_and_reports_the_model(client, tmp_path, 
     # Loading new data removes the predictions made for the old customers.
     assert manage.main(["import-customers", "--csv", str(path), "--replace"], db=db) == 0
     assert client.get("/api/admin/portfolio/summary").json()["model"] is None
+
+
+def entry(**overrides):
+    """A customer as the "Add customer" form sends it: most recent month first."""
+    body = {
+        "limit_bal": 80000, "sex": "Female", "education_code": 2, "marriage": "Single", "age": 34,
+        "default_next_month": False,
+        "history": [
+            {"repayment_status": 2, "bill_amt": 40000, "pay_amt": 0},
+            {"repayment_status": 1, "bill_amt": 38000, "pay_amt": 1000},
+            *[{"repayment_status": -1, "bill_amt": 20000, "pay_amt": 20000}] * 4,
+        ],
+    }  # fmt: skip
+    return {**body, **overrides}
+
+
+def test_a_customer_entered_by_hand_is_stored_with_its_history(loaded):
+    created = loaded.post("/api/admin/customers", json=entry())
+    assert created.status_code == 201, created.text
+    body = created.json()
+    customer = body["customer"]
+    assert customer["customer_id"] == 5  # the next free number after the four imported
+    assert body["scored"] is False and customer["default_probability"] is None  # no model yet
+    assert customer["education"] == "University" and customer["latest_status"] == 2
+    assert [h["month"] for h in customer["history"]][:2] == ["Sep 2005", "Aug 2005"]
+    assert customer["on_time_payment_rate"] == pytest.approx(4 / 6)
+    assert customer["avg_payment_delay"] == pytest.approx(0.5)
+    assert loaded.get("/api/admin/portfolio/summary").json()["customers"] == 5
+
+    chosen = loaded.post(
+        "/api/admin/customers", json=entry(customer_id=900, default_next_month=True)
+    )
+    assert chosen.json()["customer"]["customer_id"] == 900
+    assert chosen.json()["customer"]["actual_default"] is True
+
+
+def test_a_taken_number_or_a_bad_record_stores_nothing(loaded):
+    taken = loaded.post("/api/admin/customers", json=entry(customer_id=1))
+    assert taken.status_code == 409 and taken.json()["error"]["code"] == "customer_exists"
+    for bad in (
+        entry(limit_bal=0),
+        entry(age=12),
+        entry(education_code=7),
+        entry(history=entry()["history"][:5]),
+        entry(history=[{"repayment_status": 12, "bill_amt": 0, "pay_amt": 0}] * 6),
+    ):
+        response = loaded.post("/api/admin/customers", json=bad)
+        assert response.status_code == 422, bad
+    assert loaded.get("/api/admin/portfolio/summary").json()["customers"] == 4
+
+
+def test_ordinary_users_cannot_add_customers(loaded):
+    account = {"email": "ada@example.com", "password": "S3cure-pass-phrase"}
+    loaded.post(
+        "/api/auth/register",
+        json={"full_name": "Ada Lovelace", **account},
+        headers={"Authorization": ""},
+    )
+    with TestClient(loaded.app) as member:
+        csrf = member.post("/api/auth/login", json=account).json()["csrf_token"]
+        response = member.post("/api/admin/customers", json=entry(), headers={"X-CSRF-Token": csrf})
+        assert response.status_code == 403
+
+
+def test_a_customer_added_after_training_is_scored_by_the_model(client, tmp_path):
+    db = client.app.state.kb.db
+    models_dir = client.app.state.kb.settings.models_dir
+    assert (
+        manage.main(
+            ["import-customers", "--csv", str(write_csv(tmp_path / "m.csv", many_rows()))], db=db
+        )
+        == 0
+    )
+    assert manage.main(["train-model"], db=db, models_dir=models_dir) == 0
+
+    late = client.post("/api/admin/customers", json=entry(history=[
+        {"repayment_status": 3, "bill_amt": 70000, "pay_amt": 0}] * 6)).json()  # fmt: skip
+    prompt = client.post("/api/admin/customers", json=entry(history=[
+        {"repayment_status": -1, "bill_amt": 5000, "pay_amt": 5000}] * 6)).json()  # fmt: skip
+    assert late["scored"] is True and prompt["scored"] is True
+    assert late["customer"]["risk_level"] == "high"
+    assert late["customer"]["default_probability"] > prompt["customer"]["default_probability"]

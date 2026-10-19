@@ -125,6 +125,7 @@ export function Documents() {
     <>
       <PageHeader
         title="Documents"
+        eyebrow="Policy library"
         description="Upload policy documents and follow them through indexing."
         actions={<RefreshButton busy={documents.refreshing} onClick={documents.refresh} />}
       />
@@ -140,6 +141,7 @@ export function Documents() {
           onDragLeave={() => setDragging(false)}
           onDrop={onDrop}
         >
+          <span className="dropzone-icon" aria-hidden="true" />
           <p>
             <strong>Drop files here</strong> or
           </p>

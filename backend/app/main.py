@@ -37,9 +37,10 @@ from .extraction import ValidationError
 from .guidance import customer_guidance
 from .knowledge_base import Busy, DuplicateDocument, KnowledgeBase, NotFound
 from .llm import AnswerGenerator, build_generator
-from .portfolio import SORT_COLUMNS, Portfolio
+from .portfolio import SORT_COLUMNS, CustomerExists, Portfolio
 from .predictor import SUPPORTED_EXTENSIONS as DATASET_EXTENSIONS
 from .predictor import PredictionFailed, Predictor
+from .risk_model import score_customer
 
 logger = logging.getLogger("complyagent.api")
 
@@ -531,6 +532,27 @@ def create_app(
         return portfolio.list_customers(
             search, risk, actual, sort, order == "desc", page, page_size
         )
+
+    @app.post(
+        "/api/admin/customers",
+        response_model=schemas.CustomerCreated,
+        status_code=201,
+        dependencies=[admin],
+        tags=["portfolio"],
+        responses=ERROR_RESPONSES,
+    )
+    def create_customer(body: schemas.CustomerCreate):
+        """Add one customer by hand, then score them with the trained model if there is one."""
+        try:
+            customer_id = portfolio.add_customer(body.model_dump())
+        except CustomerExists as exc:
+            raise ApiError(
+                409,
+                "customer_exists",
+                f"Customer {exc.customer_id} already exists. Use another number or leave it blank.",
+            ) from exc
+        scored = score_customer(kb.db, settings.models_dir, customer_id)
+        return {"customer": portfolio.get_customer(customer_id), "scored": scored}
 
     @app.get(
         "/api/admin/customers/{customer_id}",

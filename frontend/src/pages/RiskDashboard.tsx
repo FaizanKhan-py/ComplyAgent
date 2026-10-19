@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom'
 import { api } from '../api/client'
 import type { PortfolioSummary, RiskModel } from '../api/types'
 import { BarList, ColumnChart } from '../components/charts'
+import { RiskSpectrum } from '../components/visuals'
 import { EmptyState, ErrorState, Loading, PageHeader, RefreshButton, StatCard } from '../components/ui'
 import { useResource } from '../hooks/useResource'
 import { formatDateTime, formatMoneyCompact, formatNumber, formatPercent } from '../lib/format'
@@ -20,7 +21,7 @@ function ModelCard({ model }: { model: RiskModel }) {
           training.
         </p>
       </div>
-      <dl className="details">
+      <dl className="details details-metrics">
         <div>
           <dt>Model</dt>
           <dd>{model.model_name}</dd>
@@ -58,7 +59,6 @@ function ModelCard({ model }: { model: RiskModel }) {
 
 function Charts({ s }: { s: PortfolioSummary }) {
   const high = s.by_risk.find((g) => g.risk_level === 'high')?.customers ?? 0
-  const largestGroup = Math.max(...s.by_risk.map((g) => g.customers), 1)
   const latestMonth = s.by_month.at(-1)?.month
 
   return (
@@ -96,28 +96,25 @@ function Charts({ s }: { s: PortfolioSummary }) {
       </section>
 
       {s.model ? (
-        <div className="grid grid-2">
-          <section className="card" aria-label="Customers by predicted risk">
+        <div className="grid grid-split">
+          <section className="card card-feature" aria-label="Customers by predicted risk">
             <div>
               <h2 id="risk-title">Customers by predicted risk</h2>
-              <p className="muted small">The model's chance of default next month, in three levels.</p>
+              <p className="muted small">
+                The model's chance of default next month, in three levels: low {RISK_RANGE.low}, medium{' '}
+                {RISK_RANGE.medium}, high {RISK_RANGE.high}.
+              </p>
             </div>
-            <BarList
-              labelledBy="risk-title"
-              bars={s.by_risk.map((g) => ({
-                label: RISK_LABEL[g.risk_level],
-                share: g.customers / largestGroup,
-                value: formatNumber(g.customers),
-                detail: `Predicted chance of default ${RISK_RANGE[g.risk_level]}`,
-              }))}
+            <RiskSpectrum
+              counts={Object.fromEntries(s.by_risk.map((g) => [g.risk_level, g.customers]))}
             />
           </section>
 
           <section className="card" aria-label="Actual default rate by predicted risk">
             <div>
-              <h2 id="actual-title">Actual default rate by predicted risk</h2>
+              <h2 id="actual-title">Did the levels hold?</h2>
               <p className="muted small">
-                How many customers in each level really defaulted. Most were also used to train the
+                Actual default rate by predicted risk. Most of these customers were also used to train the
                 model, so see the test scores below for unseen customers.
               </p>
             </div>
@@ -128,6 +125,7 @@ function Charts({ s }: { s: PortfolioSummary }) {
                 share: g.default_rate ?? 0,
                 value: g.default_rate === null ? '—' : formatPercent(g.default_rate),
                 detail: people(g.customers),
+                tone: g.risk_level,
               }))}
             />
           </section>
@@ -144,23 +142,7 @@ function Charts({ s }: { s: PortfolioSummary }) {
         </section>
       )}
 
-      <div className="grid grid-2">
-        <section className="card" aria-label="Delinquency trend">
-          <div>
-            <h2 id="trend-title">Delinquency trend</h2>
-            <p className="muted small">Share of customers at least one month late, by month.</p>
-          </div>
-          <ColumnChart
-            labelledBy="trend-title"
-            bars={s.by_month.map((m) => ({
-              label: m.month,
-              share: m.late_rate * 2.5, // the scale tops out at 40% so the change is visible
-              value: formatPercent(m.late_rate, 1),
-              detail: `${formatMoneyCompact(m.billed)} billed, ${formatMoneyCompact(m.paid)} paid`,
-            }))}
-          />
-        </section>
-
+      <div className="grid grid-split-rev">
         <section className="card" aria-label="Default rate by education">
           <div>
             <h2 id="education-title">Default rate by education</h2>
@@ -173,6 +155,26 @@ function Charts({ s }: { s: PortfolioSummary }) {
               share: g.default_rate,
               value: formatPercent(g.default_rate),
               detail: people(g.customers),
+            }))}
+          />
+        </section>
+
+        <section className="card" aria-label="Delinquency trend">
+          <div className="card-head">
+            <div>
+              <h2 id="trend-title">Delinquency trend</h2>
+              <p className="muted small">Share of customers at least one month late, by month.</p>
+            </div>
+            {latestMonth ? <span className="legend-key">Latest · {latestMonth}</span> : null}
+          </div>
+          <ColumnChart
+            labelledBy="trend-title"
+            bars={s.by_month.map((m) => ({
+              label: m.month,
+              share: m.late_rate * 2.5, // the scale tops out at 40% so the change is visible
+              value: formatPercent(m.late_rate, 1),
+              detail: `${formatMoneyCompact(m.billed)} billed, ${formatMoneyCompact(m.paid)} paid`,
+              tone: m.month === latestMonth ? ('highlight' as const) : undefined,
             }))}
           />
         </section>
@@ -191,6 +193,7 @@ export function RiskDashboard() {
     <>
       <PageHeader
         title="Risk Dashboard"
+        eyebrow="Portfolio ledger"
         description="Portfolio overview, risk distribution and delinquency trends."
         actions={<RefreshButton busy={summary.refreshing} onClick={summary.refresh} />}
       />

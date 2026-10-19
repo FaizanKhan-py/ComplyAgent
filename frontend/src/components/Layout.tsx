@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth'
+import { useActiveRect } from '../lib/motion'
+import { BrandMark } from './AuthShell'
 
 const NAV = [
   { to: '/', label: 'Risk Dashboard', icon: 'chart', end: true, adminOnly: true },
@@ -27,12 +29,22 @@ function NavIcon({ name }: { name: keyof typeof ICON_PATHS }) {
   )
 }
 
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean)
+  const letters = parts.length > 1 ? parts[0][0] + parts[parts.length - 1][0] : (parts[0] ?? '?').slice(0, 2)
+  return letters.toUpperCase()
+}
+
 export function Layout() {
   const { user, signOut } = useAuth()
+  const { pathname } = useLocation()
   const [leaving, setLeaving] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const toggleRef = useRef<HTMLButtonElement>(null)
+  const [navRef, active] = useActiveRect<HTMLUListElement>(pathname)
   const isAdmin = user?.role === 'admin'
+  // The assistant animates its own tabs, so its sub-pages share one page key.
+  const pageKey = pathname.startsWith('/assistant') ? '/assistant' : pathname
 
   // On small screens the menu is a drop-down panel; Escape closes it and hands focus back.
   useEffect(() => {
@@ -55,7 +67,7 @@ export function Layout() {
       <aside className={menuOpen ? 'sidebar sidebar-open' : 'sidebar'}>
         <div className="sidebar-top">
           <div className="brand">
-            <span className="brand-mark" aria-hidden="true">✓</span> ComplyAgent
+            <BrandMark /> ComplyAgent
             {isAdmin ? <span className="brand-tag">Admin</span> : null}
           </div>
           <button
@@ -72,7 +84,16 @@ export function Layout() {
         </div>
         <div id="sidebar-panel" className="sidebar-panel">
           <nav aria-label="Main">
-            <ul className="nav">
+            <ul className="nav" ref={navRef}>
+              <li
+                className="nav-indicator"
+                aria-hidden="true"
+                style={
+                  active
+                    ? { opacity: 1, transform: `translateY(${active.top}px)`, height: active.height }
+                    : { opacity: 0 }
+                }
+              />
               {NAV.filter((item) => isAdmin || !item.adminOnly).map((item) => (
                 <li key={item.to}>
                   <NavLink
@@ -90,10 +111,15 @@ export function Layout() {
           </nav>
           {user ? (
             <div className="sidebar-foot">
-              <div className="account" aria-label="Signed-in account">
-                <strong className="account-name">{user.full_name}</strong>
-                <span className="muted small account-email">{user.email}</span>
-                <span className="muted small">{isAdmin ? 'Administrator' : 'Member'}</span>
+              <div className="account-row">
+                <span className="avatar" aria-hidden="true">
+                  {initials(user.full_name)}
+                </span>
+                <div className="account" aria-label="Signed-in account">
+                  <strong className="account-name">{user.full_name}</strong>
+                  <span className="muted small account-email">{user.email}</span>
+                  <span className="muted small">{isAdmin ? 'Administrator' : 'Member'}</span>
+                </div>
               </div>
               <button
                 type="button"
@@ -111,7 +137,9 @@ export function Layout() {
         </div>
       </aside>
       <main id="main" className="main" tabIndex={-1}>
-        <Outlet />
+        <div className="page" key={pageKey}>
+          <Outlet />
+        </div>
       </main>
     </div>
   )

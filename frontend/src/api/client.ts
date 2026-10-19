@@ -2,6 +2,8 @@ import type {
   ActivityEvent,
   AdminConfig,
   AuthStatus,
+  CustomerCreate,
+  CustomerCreated,
   CustomerDetail,
   CustomerGuidance,
   CustomerList,
@@ -165,6 +167,8 @@ export const api = {
     return request<CustomerList>(`/api/admin/customers${suffix}`)
   },
   getCustomer: (id: number) => request<CustomerDetail>(`/api/admin/customers/${id}`),
+  createCustomer: (body: CustomerCreate) =>
+    request<CustomerCreated>('/api/admin/customers', { method: 'POST', json: body }),
   customerGuidance: (id: number, signal?: AbortSignal) =>
     request<CustomerGuidance>(`/api/admin/customers/${id}/guidance`, { method: 'POST', signal }),
 

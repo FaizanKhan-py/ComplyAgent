@@ -229,6 +229,33 @@ export interface CustomerDetail extends CustomerSummary {
   history: MonthlyRecord[]
 }
 
+/** One month as the "Add customer" form sends it. */
+export interface MonthInput {
+  repayment_status: number
+  bill_amt: number
+  pay_amt: number
+}
+
+/** A customer entered by hand, in the shape of a row of the UCI dataset. */
+export interface CustomerCreate {
+  /** Leave out to use the next free number. */
+  customer_id?: number
+  limit_bal: number
+  sex: 'Male' | 'Female'
+  education_code: number
+  marriage: 'Married' | 'Single' | 'Other'
+  age: number
+  default_next_month: boolean
+  /** Six months, most recent first. */
+  history: MonthInput[]
+}
+
+export interface CustomerCreated {
+  customer: CustomerDetail
+  /** False when no model has been trained yet, so the customer has no prediction. */
+  scored: boolean
+}
+
 export interface GuidanceSection extends QueryResponse {
   key: 'actions' | 'escalation' | 'hardship' | 'contact'
   title: string

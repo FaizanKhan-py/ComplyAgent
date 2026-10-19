@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { useCountUp } from '../lib/motion'
 import type { ComponentStatus, DocumentStatus, KnowledgeBaseStatus } from '../api/types'
 
 type Tone = 'ok' | 'warn' | 'error' | 'info' | 'neutral'
@@ -61,9 +62,21 @@ export function StatCard({
   return (
     <div className={`card stat stat-${tone}`}>
       <div className="stat-label">{label}</div>
-      <div className="stat-value">{value}</div>
+      <div className="stat-value">{typeof value === 'string' ? <CountUp value={value} /> : value}</div>
       {hint ? <div className="stat-hint">{hint}</div> : null}
     </div>
+  )
+}
+
+/** A figure that counts up when it first appears; screen readers get the final value only. */
+function CountUp({ value }: { value: string }) {
+  const shown = useCountUp(value)
+  if (shown === value) return <>{value}</>
+  return (
+    <>
+      <span aria-hidden="true">{shown}</span>
+      <span className="visually-hidden">{value}</span>
+    </>
   )
 }
 
@@ -133,14 +146,18 @@ export function PageHeader({
   title,
   description,
   actions,
+  eyebrow,
 }: {
   title: string
   description: string
   actions?: ReactNode
+  /** A short kicker above the title naming the part of the product, e.g. "Portfolio ledger". */
+  eyebrow?: string
 }) {
   return (
     <header className="page-header">
-      <div>
+      <div className="page-title">
+        {eyebrow ? <span className="eyebrow">{eyebrow}</span> : null}
         <h1>{title}</h1>
         <p>{description}</p>
       </div>

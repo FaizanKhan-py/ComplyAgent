@@ -287,6 +287,34 @@ class CustomerDetail(CustomerSummary):
     history: list[MonthlyRecord]
 
 
+class MonthInput(BaseModel):
+    repayment_status: int = Field(
+        ge=-2, le=9, description="-2 no spending, -1 paid in full, 0 minimum paid, n months late"
+    )
+    bill_amt: int = Field(ge=-100_000_000, le=100_000_000)
+    pay_amt: int = Field(ge=0, le=100_000_000)
+
+
+class CustomerCreate(BaseModel):
+    """One customer entered by hand, in the same shape as a row of the UCI dataset."""
+
+    customer_id: int | None = Field(default=None, ge=1, le=2_000_000_000)
+    limit_bal: int = Field(gt=0, le=100_000_000)
+    sex: Literal["Male", "Female"]
+    education_code: int = Field(ge=1, le=4)
+    marriage: Literal["Married", "Single", "Other"]
+    age: int = Field(ge=18, le=120)
+    default_next_month: bool
+    history: list[MonthInput] = Field(
+        min_length=6, max_length=6, description="Six months, most recent first."
+    )
+
+
+class CustomerCreated(BaseModel):
+    customer: CustomerDetail
+    scored: bool
+
+
 class GuidanceSection(QueryResponse):
     key: Literal["actions", "escalation", "hardship", "contact"]
     title: str

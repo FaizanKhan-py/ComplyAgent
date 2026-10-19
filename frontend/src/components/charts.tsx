@@ -7,7 +7,11 @@ export interface Bar {
   value: ReactNode
   /** Shown on hover, and read out with the row. */
   detail?: string
+  /** Colours the bar by meaning: a risk level, or `highlight` for the one value to look at. */
+  tone?: 'low' | 'medium' | 'high' | 'highlight'
 }
+
+const toneClass = (bar: Bar) => (bar.tone ? ` tone-${bar.tone}` : '')
 
 /** Horizontal bars, one row per category, each with its value written beside it. */
 export function BarList({ bars, labelledBy }: { bars: Bar[]; labelledBy: string }) {
@@ -17,7 +21,7 @@ export function BarList({ bars, labelledBy }: { bars: Bar[]; labelledBy: string 
         <li key={bar.label} title={bar.detail}>
           <span className="bar-label">{bar.label}</span>
           <span className="bar-track" aria-hidden="true">
-            <span className="bar-fill" style={{ width: `${clamp(bar.share) * 100}%` }} />
+            <span className={`bar-fill${toneClass(bar)}`} style={{ width: `${clamp(bar.share) * 100}%` }} />
           </span>
           <span className="bar-value">{bar.value}</span>
           {bar.detail ? <span className="visually-hidden">{bar.detail}</span> : null}
@@ -36,7 +40,7 @@ export function ColumnChart({ bars, labelledBy }: { bars: Bar[]; labelledBy: str
           <li key={bar.label} title={bar.detail}>
             <span className="column-value">{bar.value}</span>
             <span className="column-track" aria-hidden="true">
-              <span className="column-fill" style={{ height: `${clamp(bar.share) * 100}%` }} />
+              <span className={`column-fill${toneClass(bar)}`} style={{ height: `${clamp(bar.share) * 100}%` }} />
             </span>
             <span className="column-label">{bar.label}</span>
             {bar.detail ? <span className="visually-hidden">{bar.detail}</span> : null}
