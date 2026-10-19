@@ -1,0 +1,78 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R 6 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 796 >>
+stream
+BT /F1 11 Tf 54 760 Td 14 TL
+(ESCALATION AND DELINQUENCY POLICY \(Sample, fictional\)) Tj T*
+(Policy ID: ES-03) Tj T*
+() Tj T*
+(1. Delinquency stages) Tj T*
+() Tj T*
+(An account is in Stage 1 when it is 1 to 30 days overdue, Stage 2 when it is 31 to 60) Tj T*
+(days overdue, Stage 3 when it is 61 to 90 days overdue, and Stage 4 when it is more than) Tj T*
+(90 days overdue.) Tj T*
+() Tj T*
+(2. Actions by stage) Tj T*
+() Tj T*
+(In Stage 1 the customer receives a reminder message and no late fee is charged during) Tj T*
+(the first 10 days. In Stage 2 a collections officer must attempt a live phone) Tj T*
+(conversation and must offer to discuss a hardship plan. In Stage 3 the account is) Tj T*
+(assigned to a named collections officer and a formal notice of arrears is sent by post.) Tj T*
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 996 >>
+stream
+BT /F1 11 Tf 54 760 Td 14 TL
+(3. Escalation to a human reviewer) Tj T*
+() Tj T*
+(Every account that reaches Stage 4, meaning more than 90 days overdue, must be escalated) Tj T*
+(to a human collections officer before any legal notice is sent. An automated agent must) Tj T*
+(also escalate to a human when the customer disputes the debt, when the customer mentions) Tj T*
+(bankruptcy or a lawyer, when the outstanding balance is above 25,000 dollars, or when) Tj T*
+(the agent's confidence in its recommended action is low.) Tj T*
+() Tj T*
+(4. Legal action) Tj T*
+() Tj T*
+(Legal action may only be started on accounts in Stage 4 and requires written approval) Tj T*
+(from the Head of Collections. Legal action must not be started while a hardship plan is) Tj T*
+(active or while a dispute is open.) Tj T*
+() Tj T*
+(5. Record keeping) Tj T*
+() Tj T*
+(Each escalation must record the reason, the date, the officer who accepted it, and the) Tj T*
+(outcome. Records are kept for seven years.) Tj T*
+ET
+endstream
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000121 00000 n 
+0000000191 00000 n 
+0000000317 00000 n 
+0000001164 00000 n 
+0000001290 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+2337
+%%EOF
