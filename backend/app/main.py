@@ -26,7 +26,7 @@ from fastapi import (
 )
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import auth, schemas
@@ -205,6 +205,15 @@ def create_app(
         return {k: row.get(k) for k in schemas.User.model_fields}
 
     # --- public ----------------------------------------------------------------------------
+
+    # This server is API-only (the UI is the Vite app); send browsers that land on it to the docs.
+    @app.get("/", include_in_schema=False)
+    def root():
+        return RedirectResponse("/docs")
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon():
+        return Response(status_code=204)
 
     @app.get("/api/health", response_model=schemas.PublicHealth, tags=["public"])
     def public_health():
