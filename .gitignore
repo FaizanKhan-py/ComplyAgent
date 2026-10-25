@@ -13,3 +13,6 @@ __pycache__/
 # Backend runtime data: the local database, uploaded files and downloaded/trained models.
 # Each machine builds its own with: python -m app.manage import-customers / train-model
 backend/storage/
+# Secrets: only .env.example is tracked
+.env
+!.env.example
