@@ -9,8 +9,12 @@ from ucimlrepo import fetch_ucirepo
 from sklearn.model_selection import train_test_split
 
 # ---------------- CONFIG ----------------
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+if not DB_PASSWORD:
+    raise SystemExit("Set the DB_PASSWORD environment variable first (see database/README.md).")
+
 DB = dict(host="localhost", user="root",
-          password=os.getenv("DB_PASSWORD", "Heisen21"),
+          password=DB_PASSWORD,
           database="complygent_db")
 # ----------------------------------------
 
