@@ -50,11 +50,11 @@ def test_add_documents_and_evaluate_rag_commands(client, tmp_path, capsys):
     files = [str(p) for p in sorted(SAMPLES.glob("*_policy.*"))]
     assert manage.main(["add-documents", *files], kb=kb) == 0
     assert manage.main(["add-documents", files[0]], kb=kb) == 0  # a duplicate is skipped
-    bad = tmp_path / "notes.docx"
-    bad.write_bytes(b"PK")
+    bad = tmp_path / "notes.rtf"
+    bad.write_bytes(b"{\\rtf1 notes}")
     assert manage.main(["add-documents", str(bad)], kb=kb) == 1
     out = capsys.readouterr().out
-    assert out.count("indexed") == 3 and "already uploaded" in out and "notes.docx" in out
+    assert out.count("indexed") == len(files) and "already uploaded" in out and "notes.rtf" in out
 
     questions = tmp_path / "questions.json"
     questions.write_text(

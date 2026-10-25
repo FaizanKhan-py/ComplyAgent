@@ -1,11 +1,10 @@
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { answer, config, customer, customerDetail, doc, health, mockApi, portfolio, stats } from '../test/fixtures'
+import { answer, config, customer, customerDetail, doc, health, mockApi, portfolio } from '../test/fixtures'
 import { CustomerRecord } from './CustomerRecord'
 import { Customers } from './Customers'
 import { Documents } from './Documents'
-import { KnowledgeBase } from './KnowledgeBase'
 import { Playground } from './Playground'
 import { PredictDataset } from './PredictDataset'
 import { RiskDashboard } from './RiskDashboard'
@@ -98,6 +97,7 @@ describe('Customer Records', () => {
     const row = (await screen.findByRole('link', { name: 'Customer 7' })).closest('tr')!
     expect(within(row).getByRole('link', { name: 'Customer 7' })).toHaveAttribute('href', '/customers/7')
     expect(within(row).getByText('Age 24 · University')).toBeInTheDocument()
+    expect(within(row).getByText('zainab.khan7@example.net')).toBeInTheDocument()
     expect(within(row).getByText('NT$20,000')).toBeInTheDocument()
     expect(within(row).getByText('2 months late')).toBeInTheDocument()
     expect(within(row).getByText('High risk · 82%')).toBeInTheDocument()
@@ -148,6 +148,188 @@ describe('Customer Records', () => {
     expect(screen.getByLabelText('Actual status')).toHaveValue('defaulted')
   })
 
+  it('shows this month\'s overdue customers, riskiest first, each with a details button', async () => {
+    const user = userEvent.setup()
+    const base = 'GET /api/admin/customers?'
+    const api = mockApi({
+      [`${base}sort=id&order=asc&page=1&page_size=25`]: list([customer(), customer({ customer_id: 8, latest_status: -1 })]),
+      [`${base}payment=overdue&sort=probability&order=desc&page=1&page_size=25`]: list([customer()], 6819),
+    })
+    page(<Customers />)
+
+    await screen.findByText('Customer 8')
+    await user.click(screen.getByRole('radio', { name: 'Overdue this month' }))
+    await waitFor(() => expect(api.calls.at(-1)!.key).toContain('payment=overdue&sort=probability&order=desc'))
+    await waitFor(() => expect(screen.queryByText('Customer 8')).not.toBeInTheDocument())
+    expect(screen.getByRole('radio', { name: 'Overdue this month' })).toBeChecked()
+    expect(screen.getByText(/late on their latest bill/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Sort by')).toHaveValue('risk')
+    const row = screen.getByRole('link', { name: 'Customer 7' }).closest('tr')!
+    expect(within(row).getByText('NT$3,913')).toBeInTheDocument()
+    expect(within(row).getByRole('link', { name: 'View details of customer 7' })).toHaveAttribute('href', '/customers/7')
+    expect(screen.getByText('Showing 1–1 of 6,819')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('radio', { name: 'All customers' }))
+    expect(await screen.findByText('Customer 8')).toBeInTheDocument()
+    expect(api.calls.at(-1)!.key).toBe(`${base}sort=id&order=asc&page=1&page_size=25`)
+  })
+
+  it('says so when nobody is overdue this month', async () => {
+    mockApi({ 'GET /api/admin/customers?payment=overdue&sort=probability&order=desc&page=1&page_size=25': list([]) })
+    render(
+      <MemoryRouter initialEntries={['/customers?payment=overdue&sort=probability&order=desc']}>
+        <Customers />
+      </MemoryRouter>,
+    )
+    expect(await screen.findByText('No customers are overdue this month')).toBeInTheDocument()
+  })
+
+  it('marks an overdue record, shows the message button and goes back to the same list', async () => {
+    mockApi({
+      'GET /api/admin/customers/7': () => ({ body: customerDetail }),
+      'GET /api/admin/customers/8': () => ({ body: { ...customerDetail, customer_id: 8, latest_status: 0 } }),
+    })
+    const view = render(
+      <MemoryRouter initialEntries={[{ pathname: '/customers/7', state: { from: '/customers?payment=overdue' } }]}>
+        <Routes>
+          <Route path="/customers/:customerId" element={<CustomerRecord />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    expect(await screen.findByText(/overdue this month \(2 months late on the Sep 2005 bill\)/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Generate message' })).toBeEnabled()
+    expect(screen.getByRole('link', { name: /Customer Records/ })).toHaveAttribute('href', '/customers?payment=overdue')
+    view.unmount()
+
+    record('/customers/8')
+    expect(await screen.findByText(/not overdue this month/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Generate message' })).not.toBeInTheDocument()
+  })
+
+  const draft = {
+    customer_id: 7,
+    risk_level: 'high',
+    status: 'draft',
+    reason: null,
+    decision: {
+      action: 'send_reminder',
+      channel: 'sms',
+      priority: 'medium',
+      reasons: [{ text: 'Two months late, Stage 2.', fact_ids: ['F1'], source_ids: [1] }],
+      needs_human_review: false,
+    },
+    subject: 'ComplyAgent Finance: about your account',
+    body: 'Dear customer,\n\nA reminder that NT$3,913 on your card is overdue. Reference CA-000007\nComplyAgent Finance',
+    sources: [{ number: 1, document_id: 'm1', filename: 'messaging_policy.docx', page_number: null, score: 0.8, text: 'A collections SMS is at most 300 characters long.' }],
+    checks: ['Names ComplyAgent Finance, the amount (NT$3,913) and the reference', '14 of 150 words; the subject has no amount'],
+    corrected: ['the body must contain {reference}'],
+    model: 'gpt-4.1-mini',
+  }
+
+  it('writes a message draft and shows the decision, checks and policy behind it', async () => {
+    const user = userEvent.setup()
+    let asked = 0
+    mockApi({
+      'GET /api/admin/customers/7': () => ({ body: customerDetail }),
+      'POST /api/admin/customers/7/message': () => {
+        asked += 1
+        return { body: draft }
+      },
+    })
+    record('/customers/7')
+    await user.click(await screen.findByRole('button', { name: 'Generate message' }))
+    const card = within(await screen.findByRole('region', { name: 'Message draft' }))
+    expect(await card.findByText(/A reminder that NT\$3,913 on your card is overdue/)).toBeInTheDocument()
+    expect(card.getByText('ComplyAgent Finance: about your account')).toBeInTheDocument()
+    expect(card.getByText('Send a reminder · Email · medium priority')).toBeInTheDocument()
+    expect(card.getByText('High-risk tone')).toBeInTheDocument()
+    expect(card.getByText('Two months late, Stage 2.')).toBeInTheDocument()
+    expect(card.getByText('14 of 150 words; the subject has no amount')).toBeInTheDocument()
+    expect(card.getByText(/Fixed on the second try: the body must contain \{reference\}/)).toBeInTheDocument()
+    expect(card.getByText(/Policies it follows \(messaging_policy.docx\)/)).toBeInTheDocument()
+    expect(card.getByText(/Draft: not sent yet/)).toBeInTheDocument()
+
+    await user.click(card.getByRole('button', { name: 'Write again' }))
+    await waitFor(() => expect(asked).toBe(2))
+  })
+
+  it('sends the email only after confirmation and says delivery is not connected yet', async () => {
+    const user = userEvent.setup()
+    mockApi({
+      'GET /api/admin/customers/7': () => ({ body: customerDetail }),
+      'POST /api/admin/customers/7/message': () => ({ body: { ...draft } }),
+    })
+    record('/customers/7')
+    await user.click(await screen.findByRole('button', { name: 'Generate message' }))
+    const card = within(await screen.findByRole('region', { name: 'Message draft' }))
+    await user.click(await card.findByRole('button', { name: 'Send email' }))
+
+    expect(screen.getByText('Send this email?')).toBeInTheDocument()
+    const dialogText = screen.getByText('Send this email?').closest('dialog')!.textContent
+    expect(dialogText).toContain('To zainab.khan7@example.net (customer 7)')
+    await user.click(screen.getByRole('button', { name: 'Cancel', hidden: true }))
+    expect(card.queryByText(/Marked as sent/)).not.toBeInTheDocument()
+
+    await user.click(card.getByRole('button', { name: 'Send email' }))
+    const dialog = within(screen.getByText('Send this email?').closest('dialog')!)
+    await user.click(dialog.getByRole('button', { name: 'Send email', hidden: true }))
+    expect(await card.findByText(/Marked as sent to/)).toBeInTheDocument()
+    expect(card.getByText(/Marked as sent to zainab.khan7@example.net on/)).toBeInTheDocument()
+    expect(card.getByText(/nothing was actually emailed to zainab.khan7@example.net/)).toBeInTheDocument()
+    expect(card.getByRole('button', { name: 'Sent' })).toBeDisabled()
+
+    // A new draft has not been sent.
+    await user.click(card.getByRole('button', { name: 'Write again' }))
+    expect(await card.findByRole('button', { name: 'Send email' })).toBeEnabled()
+    expect(card.queryByText(/Marked as sent/)).not.toBeInTheDocument()
+  })
+
+  it('cannot send to a customer with no email address on record', async () => {
+    const user = userEvent.setup()
+    mockApi({
+      'GET /api/admin/customers/7': () => ({ body: { ...customerDetail, email: null } }),
+      'POST /api/admin/customers/7/message': () => ({ body: draft }),
+    })
+    record('/customers/7')
+    expect(await screen.findByText('Not on record')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Generate message' }))
+    const card = within(await screen.findByRole('region', { name: 'Message draft' }))
+    expect(await card.findByRole('button', { name: 'Send email' })).toBeDisabled()
+    expect(card.getByText(/has no email address on record, so it cannot be sent/)).toBeInTheDocument()
+  })
+
+  it('explains when no message is written, and shows errors', async () => {
+    const user = userEvent.setup()
+    let fail = false
+    mockApi({
+      'GET /api/admin/customers/7': () => ({ body: customerDetail }),
+      'POST /api/admin/customers/7/message': () =>
+        fail
+          ? failure(503, 'llm_unreachable', 'Could not reach Azure.')()
+          : {
+              body: {
+                ...draft,
+                status: 'not_written',
+                reason: 'The Decision Agent escalated this account to a person, so no automated message is written.',
+                decision: { ...draft.decision, action: 'escalate_to_human', channel: 'phone' },
+                body: null,
+                checks: [],
+                corrected: [],
+                sources: [],
+              },
+            },
+    })
+    record('/customers/7')
+    await user.click(await screen.findByRole('button', { name: 'Generate message' }))
+    expect(await screen.findByText(/No email was written. The Decision Agent escalated/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Copy' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Send email' })).not.toBeInTheDocument()
+
+    fail = true
+    await user.click(screen.getByRole('button', { name: 'Write again' }))
+    expect(await screen.findByText(/Could not write the message: Could not reach Azure./)).toBeInTheDocument()
+  })
+
   const record = (path: string) =>
     render(
       <MemoryRouter initialEntries={[path]}>
@@ -163,6 +345,7 @@ describe('Customer Records', () => {
     expect(await screen.findByRole('heading', { name: 'Customer 7' })).toBeInTheDocument()
     const account = within(screen.getByRole('region', { name: 'Account details' }))
     expect(account.getByText('NT$20,000')).toBeInTheDocument()
+    expect(account.getByText('Email').nextSibling).toHaveTextContent('zainab.khan7@example.net')
     expect(account.getByText('Education').nextSibling).toHaveTextContent('University')
     const prediction = within(screen.getByRole('region', { name: 'Risk prediction' }))
     expect(prediction.getByText('High risk · 82%')).toBeInTheDocument()
@@ -347,75 +530,6 @@ describe('Documents', () => {
     expect(screen.getByRole('button', { name: 'Delete hardship_policy.pdf' })).toBeDisabled()
     expect(await screen.findByText('Indexed', {}, { timeout: 4000 })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Delete hardship_policy.pdf' })).toBeEnabled()
-  })
-})
-
-describe('Knowledge Base', () => {
-  const ACTIVITY = [
-    { id: 2, document_id: 'x', filename: 'scan.pdf', event: 'failed', detail: 'No extractable text', created_at: '2026-10-13T09:01:00+00:00' },
-    { id: 1, document_id: 'y', filename: 'policy.txt', event: 'indexed', detail: '4 chunks', created_at: '2026-10-13T09:00:00+00:00' },
-  ]
-
-  it('shows index statistics, configuration and health', async () => {
-    mockApi({
-      'GET /api/admin/kb/stats': () => ({ body: stats() }),
-      'GET /api/admin/health': () => ({ body: health }),
-      'GET /api/admin/activity?limit=8': () => ({ body: { events: ACTIVITY } }),
-      'GET /api/admin/config': () => ({ body: config }),
-    })
-    page(<KnowledgeBase />)
-    const section = await screen.findByRole('region', { name: 'Index statistics' })
-    expect(within(section).getByText('3 / 3')).toBeInTheDocument()
-    expect(within(section).getByText('14')).toBeInTheDocument()
-    expect(screen.getByText('500 characters, 80 overlap')).toBeInTheDocument()
-    expect(screen.getByText('2 PDF · 1 TXT')).toBeInTheDocument()
-    expect(await screen.findByText('anthropic · claude-opus-5-5')).toBeInTheDocument()
-    expect(await screen.findByText('Upload storage is writable')).toBeInTheDocument()
-    expect(await screen.findByText('Ingestion failed')).toBeInTheDocument()
-    expect(screen.getByText('No extractable text')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'All documents' })).toHaveAttribute('href', '/assistant/documents')
-  })
-
-  it('explains an empty knowledge base and disables rebuild', async () => {
-    mockApi({
-      'GET /api/admin/kb/stats': () => ({
-        body: stats({ status: 'empty', total_documents: 0, total_chunks: 0, searchable_chunks: 0, by_file_type: {}, last_indexed_at: null, by_status: { pending: 0, processing: 0, indexed: 0, failed: 0 } }),
-      }),
-      'GET /api/admin/health': () => ({ body: health }),
-      'GET /api/admin/activity?limit=8': () => ({ body: { events: ACTIVITY } }),
-      'GET /api/admin/config': () => ({ body: { ...config, llm_model: null } }),
-    })
-    page(<KnowledgeBase />)
-    expect(await screen.findByText(/The knowledge base is empty/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Rebuild index' })).toBeDisabled()
-    expect(await screen.findByText('Not configured (retrieval-only)')).toBeInTheDocument()
-  })
-
-  it('rebuilds after confirmation', async () => {
-    const user = userEvent.setup()
-    const api = mockApi({
-      'GET /api/admin/kb/stats': () => ({ body: stats() }),
-      'GET /api/admin/health': () => ({ body: health }),
-      'GET /api/admin/activity?limit=8': () => ({ body: { events: ACTIVITY } }),
-      'GET /api/admin/config': () => ({ body: config }),
-      'POST /api/admin/kb/rebuild': () => ({ status: 202, body: { queued: 3 } }),
-    })
-    page(<KnowledgeBase />)
-    await user.click(await screen.findByRole('button', { name: 'Rebuild index' }))
-    await user.click(screen.getAllByRole('button', { name: 'Rebuild index', hidden: true })[1])
-    expect(await screen.findByText('Rebuild started for 3 documents.')).toBeInTheDocument()
-    expect(api.count('POST /api/admin/kb/rebuild')).toBe(1)
-  })
-
-  it('names the answer model and its provider as the backend reports them', async () => {
-    mockApi({
-      'GET /api/admin/kb/stats': () => ({ body: stats() }),
-      'GET /api/admin/health': () => ({ body: health }),
-      'GET /api/admin/activity?limit=8': () => ({ body: { events: ACTIVITY } }),
-      'GET /api/admin/config': () => ({ body: { ...config, llm_provider: 'ollama', llm_model: 'llama3.2' } }),
-    })
-    page(<KnowledgeBase />)
-    expect(await screen.findByText('ollama · llama3.2')).toBeInTheDocument()
   })
 })
 

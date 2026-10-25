@@ -21,12 +21,12 @@ from pathlib import Path
 import numpy as np
 
 from .portfolio import _ALIASES, _PAY, COLUMNS, TARGET, risk_level
+from .tables import TableError, read_table
 
 MODEL_FILE = "default_risk_model.joblib"
 PROBABILITY_COLUMN = "default_probability"
 RISK_COLUMN = "risk_level"
 ACTUAL_COLUMN = "actual default payment next month"
-MAX_ROWS = 500_000
 _BILL = [f"BILL_AMT{m}" for m in range(1, 7)]
 # The model inputs _features() builds, named as in the notebook's training table.
 BUILT_FEATURES = {
@@ -69,71 +69,6 @@ def _features(values: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
 
 
 SUPPORTED_EXTENSIONS = (".csv", ".xls", ".xlsx")
-_XLS_MAGIC = bytes.fromhex("d0cf11e0")  # the old Excel format (an OLE2 file)
-_ZIP_MAGIC = bytes.fromhex("504b0304")  # .xlsx is a zip archive
-
-
-def _cell(value) -> str:
-    """A spreadsheet cell as the text a CSV would hold: 20000.0 becomes "20000"."""
-    if value is None:
-        return ""
-    if isinstance(value, float) and value.is_integer():
-        return str(int(value))
-    return str(value)
-
-
-def _read_rows(data: bytes) -> list[list[str]]:
-    """The first sheet or the CSV as rows of text. The format comes from the bytes, not the
-    file name, so a spreadsheet renamed to .csv (or the other way round) still reads."""
-    if data.startswith(_XLS_MAGIC):
-        try:
-            import xlrd
-
-            sheet = xlrd.open_workbook(file_contents=data).sheet_by_index(0)
-        except ImportError as exc:
-            raise PredictionFailed("Reading .xls files needs xlrd: pip install xlrd", 503) from exc
-        except Exception as exc:
-            raise PredictionFailed(f"The .xls file cannot be read ({exc}).") from None
-        return [[_cell(v) for v in sheet.row_values(i)] for i in range(sheet.nrows)]
-    if data.startswith(_ZIP_MAGIC):
-        try:
-            import openpyxl
-
-            book = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
-        except ImportError as exc:
-            raise PredictionFailed(
-                "Reading .xlsx files needs openpyxl: pip install openpyxl", 503
-            ) from exc
-        except Exception as exc:
-            raise PredictionFailed(f"The .xlsx file cannot be read ({exc}).") from None
-        try:
-            return [
-                [_cell(v) for v in row] for row in book.worksheets[0].iter_rows(values_only=True)
-            ]
-        finally:
-            book.close()
-    try:
-        text = data.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        text = data.decode("latin-1")
-    return list(csv.reader(io.StringIO(text)))
-
-
-def _read_table(data: bytes) -> tuple[list[str], list[list[str]]]:
-    rows = [r for r in _read_rows(data) if any(cell.strip() for cell in r)]
-    if not rows:
-        raise PredictionFailed("The file is empty.")
-    header = [h.strip() for h in rows[0]]
-    body = rows[1:]
-    # The UCI spreadsheet has two header rows: X1..X23 and then LIMIT_BAL, ...
-    if body and "LIMIT_BAL" in [c.strip() for c in body[0]] and "LIMIT_BAL" not in header:
-        header = [(second.strip() or first) for first, second in zip(header, body[0], strict=False)]
-        body = body[1:]
-    if not body:
-        raise PredictionFailed("The file has no data rows.")
-    if len(body) > MAX_ROWS:
-        raise PredictionFailed(f"The file has more than {MAX_ROWS:,} rows.", 413)
-    return header, body
 
 
 class Predictor:
@@ -189,7 +124,10 @@ class Predictor:
 
     def predict_file(self, filename: str, data: bytes) -> dict:
         bundle = self._load()
-        header, body = _read_table(data)
+        try:
+            header, body = read_table(data)
+        except TableError as exc:
+            raise PredictionFailed(str(exc), exc.status_code) from None
         names = [_ALIASES.get(n, n) for n in header]
         missing = [c for c in COLUMNS if c not in names]
         if missing:

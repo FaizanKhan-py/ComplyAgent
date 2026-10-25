@@ -77,7 +77,8 @@ CREATE TABLE IF NOT EXISTS customers (
     age                INTEGER NOT NULL,
     default_next_month INTEGER NOT NULL,         -- what actually happened, 0 or 1
     data_split         TEXT,                     -- train | validation | test, set by training
-    created_at         TEXT NOT NULL             -- when the row was imported
+    created_at         TEXT NOT NULL,            -- when the row was imported
+    email              TEXT                      -- collections emails go here; never to an LLM
 );
 CREATE TABLE IF NOT EXISTS monthly_history (
     customer_id      INTEGER NOT NULL REFERENCES customers(customer_id) ON DELETE CASCADE,
@@ -120,6 +121,10 @@ class Database:
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            # Databases created before customers had an email address get the column.
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(customers)")}
+            if "email" not in columns:
+                conn.execute("ALTER TABLE customers ADD COLUMN email TEXT")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

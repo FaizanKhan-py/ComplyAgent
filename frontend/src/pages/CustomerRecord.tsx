@@ -1,12 +1,18 @@
+import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
 import { api } from '../api/client'
 import type { CustomerDetail } from '../api/types'
+import { MessageDraft, type MessageState } from '../components/MessageDraft'
 import { PolicyGuidance } from '../components/PolicyGuidance'
 import { PaymentStrip, ProbabilityGauge } from '../components/visuals'
 import { ActualBadge, PaymentBadge, RiskBadge } from '../components/RiskBadge'
 import { ErrorState, Loading, Notice, PageHeader } from '../components/ui'
 import { useResource } from '../hooks/useResource'
-import { formatMoney, formatPercent } from '../lib/format'
+import { errorMessage, formatMoney, formatPercent } from '../lib/format'
+
+function monthsLate(months: number): string {
+  return `${months} month${months === 1 ? '' : 's'}`
+}
 
 const SPLIT_NOTE = {
   train: 'This customer was used to train the model, so the prediction is not an independent test.',
@@ -54,12 +60,34 @@ export function CustomerRecord() {
   const id = Number(useParams().customerId)
   const record = useResource(() => api.getCustomer(id))
   const c = record.data
-  // Set by the "Add customer" page when it brings the person here after saving.
-  const created = useLocation().state as { created?: boolean; scored?: boolean } | null
+  // `created`/`scored`: set by the "Add customer" page after saving. `from`: the list, with its
+  // filters, that the person opened this record from.
+  const state = useLocation().state as { created?: boolean; scored?: boolean; from?: string } | null
+  const created = state
+  const back = state?.from?.startsWith('/customers') ? state.from : '/customers'
+
+  // The draft belongs to one customer: opening another record hides it, leaving cancels it.
+  const [drafted, setDrafted] = useState<{ id: number; state: MessageState } | null>(null)
+  const message = drafted?.id === id ? drafted.state : null
+  const pending = useRef<AbortController | null>(null)
+  useEffect(() => () => pending.current?.abort(), [id])
+
+  async function generate() {
+    pending.current?.abort()
+    const controller = new AbortController()
+    pending.current = controller
+    setDrafted({ id, state: { phase: 'loading' } })
+    try {
+      const result = await api.generateMessage(id, controller.signal)
+      setDrafted({ id, state: { phase: 'done', result } })
+    } catch (error) {
+      if (!controller.signal.aborted) setDrafted({ id, state: { phase: 'error', message: errorMessage(error) } })
+    }
+  }
 
   return (
     <>
-      <Link className="back-link" to="/customers">
+      <Link className="back-link" to={back}>
         ← Customer Records
       </Link>
       {record.loading ? (
@@ -74,11 +102,37 @@ export function CustomerRecord() {
               {created.scored ? ' and scored by the risk model.' : '. Train the model to give them a prediction.'}
             </Notice>
           ) : null}
-          <PageHeader title={`Customer ${c.customer_id}`} eyebrow="Account file" description="Credit card account" />
+          <PageHeader
+            title={`Customer ${c.customer_id}`}
+            eyebrow="Account file"
+            description={
+              c.latest_status !== null && c.latest_status > 0
+                ? `Credit card account · overdue this month (${monthsLate(c.latest_status)} late on the Sep 2005 bill)`
+                : 'Credit card account · not overdue this month'
+            }
+            actions={
+              c.latest_status !== null && c.latest_status > 0 ? (
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={message?.phase === 'loading'}
+                  onClick={() => void generate()}
+                >
+                  {message?.phase === 'loading' ? <span className="spinner spinner-sm" aria-hidden="true" /> : null}
+                  Generate message
+                </button>
+              ) : null
+            }
+          />
+          {message ? <MessageDraft state={message} email={c.email} onRegenerate={() => void generate()} /> : null}
           <div className="grid grid-2">
             <section className="card" aria-label="Account details">
               <h2>Account details</h2>
               <dl className="details">
+                <div>
+                  <dt>Email</dt>
+                  <dd>{c.email ?? <span className="muted">Not on record</span>}</dd>
+                </div>
                 <div>
                   <dt>Credit limit</dt>
                   <dd>{formatMoney(c.limit_bal)}</dd>

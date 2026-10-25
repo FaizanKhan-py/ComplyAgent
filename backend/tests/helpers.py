@@ -55,12 +55,21 @@ class FakeGenerator:
         self.calls: list[dict] = []
         self.reply = GeneratedAnswer("Scripted answer [1].", False, [1])
         self.error: LLMError | None = None
+        self.structured_calls: list[dict] = []
+        self.structured_replies: list[dict] = []
 
     def generate(self, question, sources, history):
         self.calls.append({"question": question, "sources": sources, "history": history})
         if self.error:
             raise self.error
         return self.reply
+
+    def structured(self, system, user, schema):
+        """Returns the next of `structured_replies` (dicts), validated against `schema`."""
+        self.structured_calls.append({"system": system, "user": user, "schema": schema})
+        if self.error:
+            raise self.error
+        return schema.model_validate(self.structured_replies.pop(0))
 
     def health(self):
         return "ok", "fake"

@@ -32,6 +32,18 @@ describe('Add customer', () => {
     expect(api.count('POST /api/admin/customers')).toBe(0)
   })
 
+  it('checks the optional email address', async () => {
+    const api = mockApi({ 'GET /api/admin/portfolio/summary': () => ({ body: portfolio() }) })
+    const user = userEvent.setup()
+    open()
+    await user.click(await screen.findByRole('button', { name: 'Fill with sample values' }))
+    await user.clear(screen.getByLabelText('Email'))
+    await user.type(screen.getByLabelText('Email'), 'not-an-email')
+    await user.click(screen.getByRole('button', { name: 'Save customer' }))
+    expect(screen.getByText('Enter a valid email address, or leave it blank.')).toBeInTheDocument()
+    expect(api.count('POST /api/admin/customers')).toBe(0)
+  })
+
   it('saves the sample customer and opens the new record', async () => {
     let sent: unknown
     mockApi({
@@ -52,6 +64,7 @@ describe('Add customer', () => {
     expect(await screen.findByRole('heading', { name: 'Customer 201' })).toBeInTheDocument()
     expect(screen.getByText(/was added to the database and scored by the risk model/)).toBeInTheDocument()
     expect(sent).toMatchObject({
+      email: 'sample.customer@example.com',
       limit_bal: 120000,
       sex: 'Female',
       education_code: 2,

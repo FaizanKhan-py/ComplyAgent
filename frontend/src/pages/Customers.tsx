@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useLocation, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
 import type { CustomerQuery, CustomerSort, RiskLevel } from '../api/types'
 import { ActualBadge, PaymentBadge, RiskBadge } from '../components/RiskBadge'
@@ -18,10 +18,17 @@ const SORTS: Record<string, { label: string; sort: CustomerSort; order: 'asc' | 
   limit: { label: 'Largest credit limit', sort: 'limit_bal', order: 'desc' },
 }
 
+/** "Overdue this month" opens sorted by risk: the work queue, most urgent first. */
+const VIEWS: { key: string; label: string; payment: CustomerQuery['payment']; changes: Record<string, string | undefined> }[] = [
+  { key: 'all', label: 'All customers', payment: undefined, changes: { payment: undefined, sort: undefined, order: undefined } },
+  { key: 'overdue', label: 'Overdue this month', payment: 'overdue', changes: { payment: 'overdue', sort: 'probability', order: 'desc' } },
+]
+
 /** The list is described by the URL, so a filtered view can be reloaded, shared and returned to. */
 function readQuery(params: URLSearchParams): CustomerQuery & { page: number } {
   const risk = params.get('risk') as RiskLevel | null
   const actual = params.get('actual')
+  const payment = params.get('payment')
   const sort = Object.values(SORTS).find(
     (s) => s.sort === params.get('sort') && s.order === (params.get('order') ?? 'asc'),
   )
@@ -29,6 +36,7 @@ function readQuery(params: URLSearchParams): CustomerQuery & { page: number } {
     search: params.get('search') ?? '',
     risk: risk && LEVELS.includes(risk) ? risk : undefined,
     actual: actual === 'defaulted' || actual === 'paid' ? actual : undefined,
+    payment: payment === 'overdue' ? payment : undefined,
     sort: sort?.sort ?? 'id',
     order: sort?.order ?? 'asc',
     page: Math.max(1, Number.parseInt(params.get('page') ?? '1', 10) || 1),
@@ -38,12 +46,17 @@ function readQuery(params: URLSearchParams): CustomerQuery & { page: number } {
 function Results({ query, onPage }: { query: CustomerQuery & { page: number }; onPage: (page: number) => void }) {
   const list = useResource(() => api.listCustomers({ ...query, page_size: PAGE_SIZE }))
   const data = list.data
-  const filtered = Boolean(query.search || query.risk || query.actual)
+  const filtered = Boolean(query.search || query.risk || query.actual || query.payment)
+  // The record page links back to this exact list, filters and page included.
+  const from = `/customers${useLocation().search}`
 
   if (list.loading) return <Loading label="Loading customers…" />
   if (list.error && !data) return <ErrorState error={list.error} onRetry={list.refresh} />
   if (!data) return null
   if (data.total === 0) {
+    if (query.payment === 'overdue' && !query.search && !query.risk && !query.actual) {
+      return <EmptyState title="No customers are overdue this month">Everyone paid their latest bill on time.</EmptyState>
+    }
     return filtered ? (
       <EmptyState title="No customers match">Change the search or the filters to see more.</EmptyState>
     ) : (
@@ -68,8 +81,12 @@ function Results({ query, onPage }: { query: CustomerQuery & { page: number }; o
                 <th scope="col">Customer</th>
                 <th scope="col" className="num">Credit limit</th>
                 <th scope="col">Latest payment</th>
+                <th scope="col" className="num">Latest bill</th>
                 <th scope="col">Predicted risk</th>
                 <th scope="col">Actual status</th>
+                <th scope="col">
+                  <span className="visually-hidden">Details</span>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -77,23 +94,37 @@ function Results({ query, onPage }: { query: CustomerQuery & { page: number }; o
                 <tr key={c.customer_id}>
                   <td data-label="Customer">
                     <div>
-                      <Link className="filename" to={`/customers/${c.customer_id}`}>
+                      <Link className="filename" to={`/customers/${c.customer_id}`} state={{ from }}>
                         Customer {c.customer_id}
                       </Link>
                       <div className="muted small">
                         Age {c.age} · {c.education}
                       </div>
+                      <div className="muted small">{c.email ?? 'No email on record'}</div>
                     </div>
                   </td>
                   <td data-label="Credit limit" className="num">{formatMoney(c.limit_bal)}</td>
                   <td data-label="Latest">
                     <PaymentBadge status={c.latest_status} />
                   </td>
+                  <td data-label="Latest bill" className="num">
+                    {c.latest_bill === null ? '—' : formatMoney(c.latest_bill)}
+                  </td>
                   <td data-label="Predicted">
                     <RiskBadge level={c.risk_level} probability={c.default_probability} />
                   </td>
                   <td data-label="Actual">
                     <ActualBadge defaulted={c.actual_default} />
+                  </td>
+                  <td className="row-actions">
+                    <Link
+                      className="btn btn-sm"
+                      to={`/customers/${c.customer_id}`}
+                      state={{ from }}
+                      aria-label={`View details of customer ${c.customer_id}`}
+                    >
+                      View details
+                    </Link>
                   </td>
                 </tr>
               ))}
@@ -166,6 +197,27 @@ export function Customers() {
         }
       />
       <section className="card" aria-label="Customers">
+        <div className="view-switch">
+          <div className="segmented" role="radiogroup" aria-label="Show">
+            {VIEWS.map((view) => (
+              <label key={view.key} className={view.payment === query.payment ? 'segment segment-on' : 'segment'}>
+                <input
+                  type="radio"
+                  name="customer-view"
+                  checked={view.payment === query.payment}
+                  onChange={() => update(view.changes)}
+                />
+                {view.label}
+              </label>
+            ))}
+          </div>
+          {query.payment === 'overdue' ? (
+            <p className="muted small">
+              Customers who are late on their latest bill (Sep 2005, the newest month in the data). Highest predicted
+              risk first, so the most urgent cases are at the top.
+            </p>
+          ) : null}
+        </div>
         <div className="filters">
           <label className="field filter-search">
             <span>Search</span>

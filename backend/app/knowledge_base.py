@@ -198,6 +198,18 @@ class KnowledgeBase:
         ]
         return results, len(meta)
 
+    def search(self, query: str, top_k: int | None = None) -> list[dict]:
+        """Retrieval with the configured limits, without generating an answer."""
+        return self.retrieve(query, *self._limits(top_k, None))[0]
+
+    def _limits(self, top_k: int | None, min_score: float | None) -> tuple[int, float]:
+        top_k = top_k or self.settings.rag_top_k
+        if min_score is None:
+            min_score = self.settings.rag_min_score
+        if min_score is None:
+            min_score = self.embedder.default_min_score
+        return top_k, min_score
+
     def answer(
         self,
         question: str,
@@ -207,11 +219,7 @@ class KnowledgeBase:
         document_ids: list[str] | None = None,
     ) -> dict:
         history = history or []
-        top_k = top_k or self.settings.rag_top_k
-        if min_score is None:
-            min_score = self.settings.rag_min_score
-        if min_score is None:
-            min_score = self.embedder.default_min_score
+        top_k, min_score = self._limits(top_k, min_score)
 
         # Follow-up questions ("what about 60 days?") retrieve better with the previous question.
         previous = next((m["content"] for m in reversed(history) if m["role"] == "user"), None)

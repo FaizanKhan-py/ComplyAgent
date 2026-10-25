@@ -6,6 +6,7 @@ import type {
   CustomerCreated,
   CustomerDetail,
   CustomerGuidance,
+  CustomerMessage,
   CustomerList,
   CustomerQuery,
   DatasetPrediction,
@@ -171,6 +172,9 @@ export const api = {
     request<CustomerCreated>('/api/admin/customers', { method: 'POST', json: body }),
   customerGuidance: (id: number, signal?: AbortSignal) =>
     request<CustomerGuidance>(`/api/admin/customers/${id}/guidance`, { method: 'POST', signal }),
+  /** A checked draft from the Decision Agent and the message writer. Nothing is sent. */
+  generateMessage: (id: number, signal?: AbortSignal) =>
+    request<CustomerMessage>(`/api/admin/customers/${id}/message`, { method: 'POST', signal }),
 
   predictionModel: () => request<PredictionModelInfo>('/api/admin/predict/model'),
   predictDataset: (file: File) => {

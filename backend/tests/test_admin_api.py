@@ -24,6 +24,8 @@ ADMIN_ROUTES = [
     ("post", "/api/admin/customers"),
     ("get", "/api/admin/customers/1"),
     ("post", "/api/admin/customers/1/guidance"),
+    ("post", "/api/admin/customers/1/recommendation"),
+    ("post", "/api/admin/customers/1/message"),
     ("get", "/api/admin/predict/model"),
     ("post", "/api/admin/predict/dataset"),
     ("post", "/api/admin/rag/query"),
@@ -90,7 +92,7 @@ def test_chunks_from_another_embedding_model_are_reported_stale(client, indexed)
         conn.execute("UPDATE documents SET embedding_model = 'old-model'")
     stats = client.get("/api/admin/kb/stats").json()
     assert stats["status"] == "unavailable"
-    assert stats["searchable_chunks"] == 0 and stats["stale_documents"] == 3
+    assert stats["searchable_chunks"] == 0 and stats["stale_documents"] == 4
     client.post("/api/admin/kb/rebuild")
     stats = client.get("/api/admin/kb/stats").json()
     assert stats["status"] == "ready" and stats["stale_documents"] == 0
@@ -106,7 +108,7 @@ def test_health_reports_each_dependency(client):
 
 def test_config_exposes_limits_but_no_secrets(client, settings):
     config = client.get("/api/admin/config").json()
-    assert config["supported_extensions"] == [".md", ".pdf", ".txt"]
+    assert config["supported_extensions"] == [".docx", ".md", ".pdf", ".txt"]
     assert config["max_upload_mb"] == 1 and config["llm_model"] == "fake-llm"
     assert settings.admin_api_token not in str(config)
 

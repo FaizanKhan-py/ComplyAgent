@@ -3,21 +3,22 @@ six months of payment history) and the default-risk predictions made for them.
 
     python -m app.manage import-customers     # download the data and store it
     python -m app.manage train-model          # train the model and score every customer
+    python -m app.manage import-emails FILE   # add the EMAIL column of a copy to the customers
 
 The data and the model follow notebooks/Data_pipeline_and_Modeling.ipynb.
 """
 
 from __future__ import annotations
 
-import csv
-import io
 import json
 import sqlite3
 from pathlib import Path
 
 import httpx
+from email_validator import EmailNotValidError, validate_email
 
 from .db import Database, now_iso
+from .tables import TableError, read_table
 
 DATA_URL = "https://archive.ics.uci.edu/static/public/350/data.csv"
 
@@ -64,7 +65,7 @@ FEATURES_SQL = """
 
 _CUSTOMER_ROWS = f"""
     SELECT c.customer_id, c.limit_bal, c.age, c.sex, c.education, c.marriage,
-           c.default_next_month AS actual_default, c.data_split,
+           c.default_next_month AS actual_default, c.data_split, c.email,
            h.repayment_status AS latest_status, h.bill_amt AS latest_bill,
            p.default_probability, p.predicted_default, {_RISK_SQL} AS risk_level
     FROM customers c
@@ -75,8 +76,18 @@ _CUSTOMER_ROWS = f"""
 
 _INSERT_CUSTOMER = (
     "INSERT INTO customers (customer_id, limit_bal, sex, education_code, education, "
-    "marriage, age, default_next_month, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "marriage, age, default_next_month, created_at, email) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
+
+
+def clean_email(raw: str | None) -> str | None:
+    """A valid, lower-cased address, or None when there is none. Raises ValueError if invalid."""
+    if raw is None or not str(raw).strip():
+        return None
+    try:
+        return validate_email(str(raw).strip(), check_deliverability=False).normalized.lower()
+    except EmailNotValidError as exc:
+        raise ValueError(f"'{raw}' is not a valid email address") from exc
 
 
 class ImportFailed(Exception):
@@ -110,7 +121,8 @@ class Portfolio:
     # --- import ----------------------------------------------------------------------------
 
     def import_data(self, path: Path | None = None, replace: bool = False) -> int:
-        """Load the dataset from `path`, or download it from UCI. All rows or none."""
+        """Load the dataset (CSV, .xls or .xlsx) from `path`, or download it from UCI. All rows or
+        none. An EMAIL column, when the file has one, gives each customer's address."""
         if path is None:
             try:
                 response = httpx.get(DATA_URL, timeout=120, follow_redirects=True)
@@ -120,20 +132,15 @@ class Portfolio:
                     f"Could not download the dataset from {DATA_URL} ({exc}). "
                     "Download it yourself and pass the file with --csv."
                 ) from exc
-            text = response.text
+            data = response.content
         elif path.is_file():
-            text = path.read_text(encoding="utf-8-sig")
+            data = path.read_bytes()
         else:
             raise ImportFailed(f"No file at {path}.")
 
-        reader = csv.DictReader(io.StringIO(text))
-        names = [_ALIASES.get(n, n) for n in reader.fieldnames or []]
-        missing = [c for c in [*COLUMNS, TARGET] if c not in names]
-        if missing:
-            raise ImportFailed(f"The file is missing the column(s): {', '.join(missing)}.")
-        reader.fieldnames = names
+        rows = _read_rows(data, required=[*COLUMNS, TARGET])
         customers, history = [], []
-        for line, row in enumerate(reader, start=2):
+        for line, row in rows:
             self._parse(row, line, len(customers) + 1, customers, history)
         if not customers:
             raise ImportFailed("The file has no data rows.")
@@ -159,6 +166,10 @@ class Portfolio:
             raise ImportFailed(f"Row {line}: LIMIT_BAL must be greater than 0.")
         if target not in (0, 1):
             raise ImportFailed(f"Row {line}: the default flag must be 0 or 1.")
+        try:
+            email = clean_email(row.get("EMAIL"))
+        except ValueError as exc:
+            raise ImportFailed(f"Row {line}: EMAIL {exc}.") from None
         sex = SEX.get(_int(row, "SEX", line))
         if sex is None:
             raise ImportFailed(f"Row {line}: SEX must be 1 or 2.")
@@ -175,6 +186,7 @@ class Portfolio:
                 _int(row, "AGE", line),
                 target,
                 now_iso(),
+                email,
             )
         )
         for month in range(1, 7):
@@ -190,6 +202,35 @@ class Portfolio:
                     _int(row, f"PAY_AMT{month}", line),
                 )
             )
+
+    def import_emails(self, path: Path) -> dict:
+        """Fill in each existing customer's address from a copy of the dataset with ID and EMAIL
+        columns. Nothing else changes, so the risk predictions stay. All rows or none."""
+        if not path.is_file():
+            raise ImportFailed(f"No file at {path}.")
+        emails: dict[int, str] = {}
+        for line, row in _read_rows(path.read_bytes(), required=["ID", "EMAIL"]):
+            customer_id = _int(row, "ID", line)
+            try:
+                email = clean_email(row.get("EMAIL"))
+            except ValueError as exc:
+                raise ImportFailed(f"Row {line}: EMAIL {exc}.") from None
+            if email:
+                emails[customer_id] = email
+        if not emails:
+            raise ImportFailed("The file has no email addresses.")
+        with self.db.connect() as conn:
+            known = {r[0] for r in conn.execute("SELECT customer_id FROM customers")}
+            conn.executemany(
+                "UPDATE customers SET email = ? WHERE customer_id = ?",
+                [(email, cid) for cid, email in emails.items() if cid in known],
+            )
+        updated = sum(1 for cid in emails if cid in known)
+        return {
+            "updated": updated,
+            "unknown_ids": sorted(cid for cid in emails if cid not in known),
+            "without_email": len(known) - updated,
+        }
 
     def add_customer(self, record: dict) -> int:
         """Store one customer entered by hand, with six months of history (most recent first).
@@ -218,6 +259,7 @@ class Portfolio:
                         record["age"],
                         int(record["default_next_month"]),
                         now_iso(),
+                        record.get("email"),
                     ),
                 )
             except sqlite3.IntegrityError:
@@ -311,6 +353,7 @@ class Portfolio:
         search: str = "",
         risk: str | None = None,
         actual: str | None = None,
+        payment: str | None = None,
         sort: str = "id",
         descending: bool = False,
         page: int = 1,
@@ -327,6 +370,11 @@ class Portfolio:
         if actual:
             where.append("c.default_next_month = ?")
             params.append(1 if actual == "defaulted" else 0)
+        if payment:
+            # Overdue: late in the latest month (repayment status 1 = one month late, and so on).
+            where.append(
+                "h.repayment_status > 0" if payment == "overdue" else "h.repayment_status <= 0"
+            )
         condition = f" WHERE {' AND '.join(where)}" if where else ""
         column = SORT_COLUMNS[sort]
         # Customers without a prediction sort last either way.
@@ -334,6 +382,7 @@ class Portfolio:
         with self.db.connect() as conn:
             total = conn.execute(
                 "SELECT COUNT(*) AS n FROM customers c "
+                "LEFT JOIN monthly_history h ON h.customer_id = c.customer_id AND h.month_no = 1 "
                 f"LEFT JOIN predictions p ON p.customer_id = c.customer_id{condition}",
                 params,
             ).fetchone()["n"]
@@ -379,3 +428,18 @@ class Portfolio:
         if customer["predicted_default"] is not None:
             customer["predicted_default"] = bool(customer["predicted_default"])
         return customer
+
+
+def _read_rows(data: bytes, required: list[str]) -> list[tuple[int, dict]]:
+    """The data rows of a CSV, .xls or .xlsx file as {column: text}, with the line number each came
+    from. Column names X1..X23 and Y are read as LIMIT_BAL ... and the default flag."""
+    try:
+        header, body = read_table(data)
+    except TableError as exc:
+        raise ImportFailed(str(exc)) from None
+    names = [_ALIASES.get(n, n) for n in header]
+    missing = [c for c in required if c not in names]
+    if missing:
+        raise ImportFailed(f"The file is missing the column(s): {', '.join(missing)}.")
+    # Line 1 is the header, so the first data row is line 2.
+    return [(line, dict(zip(names, row, strict=False))) for line, row in enumerate(body, start=2)]

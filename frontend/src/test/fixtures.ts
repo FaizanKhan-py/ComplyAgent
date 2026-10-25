@@ -142,6 +142,7 @@ export function portfolio(overrides: Partial<PortfolioSummary> = {}): PortfolioS
 export function customer(overrides: Partial<CustomerSummary> = {}): CustomerSummary {
   return {
     customer_id: 7,
+    email: 'zainab.khan7@example.net',
     limit_bal: 20000,
     age: 24,
     sex: 'Female',

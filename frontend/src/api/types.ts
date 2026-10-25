@@ -181,6 +181,8 @@ export interface PortfolioSummary {
 
 export interface CustomerSummary {
   customer_id: number
+  /** Where collections emails go; null when none is on record. */
+  email: string | null
   limit_bal: number
   age: number
   sex: string
@@ -208,6 +210,8 @@ export interface CustomerQuery {
   search?: string
   risk?: RiskLevel
   actual?: 'defaulted' | 'paid'
+  /** overdue: late in the latest month (Sep 2005); current: not late. */
+  payment?: 'overdue' | 'current'
   sort?: CustomerSort
   order?: 'asc' | 'desc'
   page?: number
@@ -240,6 +244,7 @@ export interface MonthInput {
 export interface CustomerCreate {
   /** Leave out to use the next free number. */
   customer_id?: number
+  email?: string
   limit_bal: number
   sex: 'Male' | 'Female'
   education_code: number
@@ -314,4 +319,44 @@ export interface DatasetPrediction {
   predictions: RowPrediction[]
   /** The uploaded file with the target column filled in, ready to download. */
   csv: string
+}
+
+// --- Decision Agent and message drafts -------------------------------------------------------
+
+export type DecisionAction = 'send_reminder' | 'offer_payment_plan' | 'schedule_call' | 'escalate_to_human' | 'no_contact'
+export type DecisionChannel = 'sms' | 'email' | 'phone' | 'none'
+
+export interface Recommendation {
+  action: DecisionAction
+  channel: DecisionChannel
+  priority: 'low' | 'medium' | 'high' | 'critical'
+  reasons: { text: string; fact_ids: string[]; source_ids: number[] }[]
+  needs_human_review: boolean
+}
+
+export interface PolicyPassage {
+  number: number
+  document_id: string
+  filename: string
+  page_number: number | null
+  score: number
+  text: string
+}
+
+export interface CustomerMessage {
+  customer_id: number
+  /** Sets the tone of the email; never stated in it. */
+  risk_level: RiskLevel | null
+  status: 'draft' | 'not_written'
+  /** Why no draft was written, when status is not_written. */
+  reason: string | null
+  decision: Recommendation | null
+  subject: string | null
+  body: string | null
+  sources: PolicyPassage[]
+  /** Guardrails the draft passed. */
+  checks: string[]
+  /** Rule breaks in the first draft, fixed on the second try. */
+  corrected: string[]
+  model: string | null
 }

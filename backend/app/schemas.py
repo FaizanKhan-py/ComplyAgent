@@ -6,6 +6,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from .decision import Recommendation
+from .portfolio import clean_email
+
 DocumentStatus = Literal["pending", "processing", "indexed", "failed"]
 ComponentStatus = Literal["ok", "degraded", "error"]
 RiskLevel = Literal["low", "medium", "high"]
@@ -251,6 +254,7 @@ class PortfolioSummary(BaseModel):
 
 class CustomerSummary(BaseModel):
     customer_id: int
+    email: str | None = Field(description="Where collections emails go. Never sent to an LLM.")
     limit_bal: int
     age: int
     sex: str
@@ -299,6 +303,7 @@ class CustomerCreate(BaseModel):
     """One customer entered by hand, in the same shape as a row of the UCI dataset."""
 
     customer_id: int | None = Field(default=None, ge=1, le=2_000_000_000)
+    email: str | None = Field(default=None, max_length=254)
     limit_bal: int = Field(gt=0, le=100_000_000)
     sex: Literal["Male", "Female"]
     education_code: int = Field(ge=1, le=4)
@@ -308,6 +313,11 @@ class CustomerCreate(BaseModel):
     history: list[MonthInput] = Field(
         min_length=6, max_length=6, description="Six months, most recent first."
     )
+
+    @field_validator("email")
+    @classmethod
+    def _valid_email(cls, value: str | None) -> str | None:
+        return clean_email(value)
 
 
 class CustomerCreated(BaseModel):
@@ -329,6 +339,46 @@ class CustomerGuidance(BaseModel):
     default_probability: float | None
     risk_level: RiskLevel | None
     sections: list[GuidanceSection]
+
+
+class CaseFact(BaseModel):
+    id: str
+    text: str
+
+
+class PolicyPassage(BaseModel):
+    number: int
+    document_id: str
+    filename: str
+    page_number: int | None
+    score: float
+    text: str
+
+
+class CustomerRecommendation(BaseModel):
+    customer_id: int
+    decided_by: Literal["rule", "model"]
+    model: str | None
+    recommendation: Recommendation
+    facts: list[CaseFact]
+    sources: list[PolicyPassage]
+    corrected: list[str] = Field(
+        description="Rule breaks in the model's first reply that it fixed when asked again."
+    )
+
+
+class CustomerMessage(BaseModel):
+    customer_id: int
+    risk_level: RiskLevel | None = Field(description="Sets the tone; never stated in the email.")
+    status: Literal["draft", "not_written"]
+    reason: str | None = Field(description="Why no draft was written, when status is not_written.")
+    decision: Recommendation | None
+    subject: str | None
+    body: str | None
+    sources: list[PolicyPassage]
+    checks: list[str] = Field(description="Guardrails the draft passed.")
+    corrected: list[str] = Field(description="Rule breaks in the first draft, fixed on retry.")
+    model: str | None
 
 
 class PredictionModelInfo(BaseModel):

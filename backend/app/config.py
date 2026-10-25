@@ -9,7 +9,12 @@ from pathlib import Path
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 
 # Extension -> file type label. Only formats the extraction module can actually read.
-SUPPORTED_EXTENSIONS: dict[str, str] = {".pdf": "pdf", ".txt": "txt", ".md": "md"}
+SUPPORTED_EXTENSIONS: dict[str, str] = {
+    ".pdf": "pdf",
+    ".docx": "docx",
+    ".txt": "txt",
+    ".md": "md",
+}
 
 
 def _int(name: str, default: int) -> int:
@@ -58,6 +63,8 @@ class Settings:
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "llama3.2"
     ollama_num_ctx: int | None = None  # None: Ollama's own default context window
+    azure_endpoint: str = ""
+    azure_deployment: str = ""
     llm_timeout_seconds: float = 60.0
     allow_registration: bool = True
     admin_emails: frozenset[str] = frozenset()  # sign-ups from these addresses become admins
@@ -138,6 +145,8 @@ class Settings:
             ollama_base_url=(os.getenv("OLLAMA_BASE_URL", "").strip() or "http://127.0.0.1:11434"),
             ollama_model=os.getenv("OLLAMA_MODEL", "").strip() or "llama3.2",
             ollama_num_ctx=_opt_int("OLLAMA_NUM_CTX"),
+            azure_endpoint=os.getenv("AZURE_AI_ENDPOINT", "").strip(),
+            azure_deployment=os.getenv("AZURE_AI_DEPLOYMENT", "").strip(),
             llm_timeout_seconds=float(_int("LLM_TIMEOUT_SECONDS", 60)),
             allow_registration=bool(_bool("ALLOW_REGISTRATION", True)),
             admin_emails=frozenset(admins),

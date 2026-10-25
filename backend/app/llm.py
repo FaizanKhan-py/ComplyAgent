@@ -1,4 +1,4 @@
-"""Answer generation from retrieved policy passages, using Claude or a local Ollama model."""
+"""Answer generation from retrieved policy passages, using Claude, Azure or a local Ollama model."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Protocol
+from typing import Protocol, TypeVar
 
 import httpx
 from pydantic import BaseModel, Field
@@ -92,6 +92,8 @@ class _StatementsSchema(BaseModel):
 
 INSUFFICIENT_EVIDENCE_ANSWER = "The indexed policies do not cover this question."
 
+_Schema = TypeVar("_Schema", bound=BaseModel)
+
 
 class AnswerGenerator(Protocol):
     provider: str
@@ -100,6 +102,7 @@ class AnswerGenerator(Protocol):
     def generate(
         self, question: str, sources: list[SourcePassage], history: list[dict[str, str]]
     ) -> GeneratedAnswer: ...
+    def structured(self, system: str, user: str, schema: type[_Schema]) -> _Schema: ...
     def health(self) -> tuple[str, str]: ...
 
 
@@ -143,18 +146,31 @@ class AnthropicAnswerGenerator:
     def generate(
         self, question: str, sources: list[SourcePassage], history: list[dict[str, str]]
     ) -> GeneratedAnswer:
-        import anthropic
+        parsed = self._parse(
+            SYSTEM_PROMPT, build_messages(question, sources, history), _AnswerSchema
+        )
+        self._succeeded()
+        return GeneratedAnswer(
+            parsed.answer.strip(), parsed.insufficient_evidence, parsed.cited_source_ids
+        )
 
-        messages = build_messages(question, sources, history)
+    def structured(self, system: str, user: str, schema: type[_Schema]) -> _Schema:
+        """One request whose reply must match `schema`."""
+        parsed = self._parse(system, [{"role": "user", "content": user}], schema)
+        self._succeeded()
+        return parsed
+
+    def _parse(self, system: str, messages: list[dict[str, str]], schema: type[_Schema]) -> _Schema:
+        import anthropic
 
         try:
             response = self._client.messages.parse(
                 model=self.model,
                 max_tokens=4000,
-                system=SYSTEM_PROMPT,
+                system=system,
                 messages=messages,
                 output_config={"effort": "low"},
-                output_format=_AnswerSchema,
+                output_format=schema,
             )
         except anthropic.AuthenticationError as exc:
             raise self._fail("llm_auth", "The Anthropic API key is missing or invalid.") from exc
@@ -189,12 +205,11 @@ class AnthropicAnswerGenerator:
         parsed = response.parsed_output
         if response.stop_reason == "max_tokens" or parsed is None:
             raise self._fail("llm_bad_output", "The model returned an incomplete answer.", True)
+        return parsed
 
+    def _succeeded(self) -> None:
         self._last_error = None
         self._last_success = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        return GeneratedAnswer(
-            parsed.answer.strip(), parsed.insufficient_evidence, parsed.cited_source_ids
-        )
 
     def _fail(self, code: str, message: str, retryable: bool = False) -> LLMError:
         self._last_error = message
@@ -235,7 +250,33 @@ class OllamaAnswerGenerator:
     ) -> GeneratedAnswer:
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         messages += build_messages(question, sources, history)
+        content = self._chat(messages, _StatementsSchema)
+        try:
+            parsed = _StatementsSchema.model_validate_json(content)
+            answer, insufficient, cited = _compose(parsed)
+        except (ValueError, SchemaError) as exc:
+            raise self._fail(
+                "llm_bad_output", "The model returned an incomplete answer.", True
+            ) from exc
+        self._succeeded()
+        return GeneratedAnswer(answer, insufficient, cited)
 
+    def structured(self, system: str, user: str, schema: type[_Schema]) -> _Schema:
+        """One request whose reply must match `schema`."""
+        content = self._chat(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}], schema
+        )
+        try:
+            parsed = schema.model_validate_json(content)
+        except (ValueError, SchemaError) as exc:
+            raise self._fail(
+                "llm_bad_output", "The model returned an incomplete answer.", True
+            ) from exc
+        self._succeeded()
+        return parsed
+
+    def _chat(self, messages: list[dict[str, str]], schema: type[BaseModel]) -> str:
+        """The reply text, constrained to `schema`. Raises LLMError for every failure."""
         try:
             response = self._client.post(
                 "/api/chat",
@@ -244,7 +285,7 @@ class OllamaAnswerGenerator:
                     "messages": messages,
                     "stream": False,
                     # A JSON schema here makes Ollama constrain the output to that shape.
-                    "format": _StatementsSchema.model_json_schema(),
+                    "format": schema.model_json_schema(),
                     "options": self._options,
                 },
             )
@@ -276,16 +317,15 @@ class OllamaAnswerGenerator:
             body = response.json()
             if body.get("done_reason") == "length":
                 raise ValueError("truncated")
-            parsed = _StatementsSchema.model_validate_json(body["message"]["content"])
-            answer, insufficient, cited = _compose(parsed)
-        except (ValueError, KeyError, TypeError, SchemaError) as exc:
+            return str(body["message"]["content"])
+        except (ValueError, KeyError, TypeError) as exc:
             raise self._fail(
                 "llm_bad_output", "The model returned an incomplete answer.", True
             ) from exc
 
+    def _succeeded(self) -> None:
         self._last_error = None
         self._last_success = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        return GeneratedAnswer(answer, insufficient, cited)
 
     def _fail(self, code: str, message: str, retryable: bool = False) -> LLMError:
         self._last_error = message
@@ -314,6 +354,162 @@ class OllamaAnswerGenerator:
         if self._last_success:
             return "ok", f"{self.model} (Ollama): last request succeeded at {self._last_success}"
         return "ok", f"{self.model} (Ollama) is available"
+
+
+AZURE_API_VERSION = "2024-10-21"
+
+
+def _strict_schema(model: type[BaseModel]) -> dict:
+    """Azure's strict JSON mode needs every object to forbid extra keys."""
+
+    def walk(node) -> None:
+        if isinstance(node, dict):
+            if node.get("type") == "object":
+                node["additionalProperties"] = False
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    schema = model.model_json_schema()
+    walk(schema)
+    return schema
+
+
+class AzureAnswerGenerator:
+    """Answers from a model deployed in Azure AI Foundry / Azure OpenAI (AZURE_AI_API_KEY)."""
+
+    provider = "azure"
+
+    def __init__(
+        self,
+        deployment: str,
+        endpoint: str,
+        api_key: str,
+        timeout: float,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        self.model = deployment
+        self._client = httpx.Client(
+            base_url=endpoint.rstrip("/") + "/openai",
+            timeout=timeout,
+            transport=transport,
+            headers={"api-key": api_key},
+            params={"api-version": AZURE_API_VERSION},
+        )
+        self._last_error: str | None = None
+        self._last_success: str | None = None
+
+    def generate(
+        self, question: str, sources: list[SourcePassage], history: list[dict[str, str]]
+    ) -> GeneratedAnswer:
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages += build_messages(question, sources, history)
+        parsed = self._chat(messages, _AnswerSchema)
+        self._succeeded()
+        return GeneratedAnswer(
+            parsed.answer.strip(), parsed.insufficient_evidence, parsed.cited_source_ids
+        )
+
+    def structured(self, system: str, user: str, schema: type[_Schema]) -> _Schema:
+        """One request whose reply must match `schema`."""
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+        parsed = self._chat(messages, schema)
+        self._succeeded()
+        return parsed
+
+    def _chat(self, messages: list[dict[str, str]], schema: type[_Schema]) -> _Schema:
+        """The reply, parsed into `schema`. Raises LLMError for every failure."""
+        try:
+            response = self._client.post(
+                f"/deployments/{self.model}/chat/completions",
+                json={
+                    "messages": messages,
+                    "temperature": 0,
+                    # Strict JSON schema: Azure guarantees the reply has exactly this shape.
+                    "response_format": {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": schema.__name__,
+                            "strict": True,
+                            "schema": _strict_schema(schema),
+                        },
+                    },
+                },
+            )
+        except httpx.TimeoutException as exc:
+            raise self._fail("llm_timeout", "Azure timed out.", True) from exc
+        except httpx.HTTPError as exc:
+            raise self._fail("llm_unreachable", "Could not reach Azure.", True) from exc
+
+        status = response.status_code
+        if status in (401, 403):
+            raise self._fail("llm_auth", "The Azure API key or endpoint is wrong.")
+        if status == 404:
+            raise self._fail(
+                "llm_model_not_found", f"Azure has no deployment named '{self.model}'."
+            )
+        if status == 429:
+            raise self._fail(
+                "llm_rate_limited", "The Azure rate limit was hit. Try again shortly.", True
+            )
+        if status == 400 and _azure_error(response) == "content_filter":
+            raise self._fail("llm_refused", "Azure's content filter blocked this request.")
+        if status >= 400:
+            retryable = status >= 500
+            raise self._fail(
+                "llm_unavailable" if retryable else "llm_request_rejected",
+                f"Azure returned an error (HTTP {status}).",
+                retryable,
+            )
+
+        try:
+            choice = response.json()["choices"][0]
+            if choice["finish_reason"] != "stop":
+                raise ValueError(choice["finish_reason"])  # cut off, or filtered
+            return schema.model_validate_json(choice["message"]["content"])
+        except (ValueError, KeyError, IndexError, TypeError, SchemaError) as exc:
+            raise self._fail(
+                "llm_bad_output", "The model returned an incomplete answer.", True
+            ) from exc
+
+    def _succeeded(self) -> None:
+        self._last_error = None
+        self._last_success = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    def _fail(self, code: str, message: str, retryable: bool = False) -> LLMError:
+        self._last_error = message
+        logger.warning("Answer generation failed: %s", code)
+        return LLMError(code, message, retryable)
+
+    def health(self) -> tuple[str, str]:
+        """Lists the deployments. This checks the key and the name without spending tokens."""
+        try:
+            response = self._client.get(
+                "/deployments", params={"api-version": "2022-12-01"}, timeout=5.0
+            )
+            if response.status_code in (401, 403):
+                return "error", "The Azure API key or endpoint is wrong."
+            response.raise_for_status()
+            deployments = {d["id"] for d in response.json()["data"]}
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            return "error", "Azure is not reachable."
+        if self.model not in deployments:
+            return "error", f"Azure has no deployment named '{self.model}'."
+        if self._last_error:
+            return "error", f"{self.model} (Azure): last request failed. {self._last_error}"
+        if self._last_success:
+            return "ok", f"{self.model} (Azure): last request succeeded at {self._last_success}"
+        return "ok", f"{self.model} (Azure) is deployed"
+
+
+def _azure_error(response: httpx.Response) -> str:
+    """Azure's error code, e.g. 'content_filter'."""
+    try:
+        return str(response.json()["error"]["code"])
+    except (ValueError, KeyError, TypeError):
+        return ""
 
 
 def _compose(parsed: _StatementsSchema) -> tuple[str, bool, list[int]]:
@@ -354,6 +550,13 @@ def build_generator(settings: Settings) -> AnswerGenerator | None:
     has_key = bool(os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN"))
     if provider == "anthropic" or (provider == "auto" and has_key):
         return AnthropicAnswerGenerator(settings.anthropic_model, settings.llm_timeout_seconds)
+    if provider == "azure":
+        return AzureAnswerGenerator(
+            settings.azure_deployment,
+            settings.azure_endpoint,
+            os.getenv("AZURE_AI_API_KEY", "").strip(),
+            settings.llm_timeout_seconds,
+        )
     if provider == "ollama":
         return OllamaAnswerGenerator(
             settings.ollama_model,
@@ -363,4 +566,6 @@ def build_generator(settings: Settings) -> AnswerGenerator | None:
         )
     if provider == "auto":
         return None
-    raise ValueError(f"Unknown LLM_PROVIDER '{provider}' (use auto, anthropic, ollama or none)")
+    raise ValueError(
+        f"Unknown LLM_PROVIDER '{provider}' (use auto, anthropic, azure, ollama or none)"
+    )

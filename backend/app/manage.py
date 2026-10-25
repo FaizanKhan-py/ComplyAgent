@@ -6,7 +6,8 @@ Run from the backend directory with the virtualenv active:
     python -m app.manage set-role --email someone@example.com --role admin
     python -m app.manage reset-password --email someone@example.com
     python -m app.manage list-users
-    python -m app.manage import-customers [--csv path/to/data.csv] [--replace]
+    python -m app.manage import-customers [--csv path/to/data.csv|.xls|.xlsx] [--replace]
+    python -m app.manage import-emails path/to/data_with_emails.xls
     python -m app.manage train-model
     python -m app.manage add-documents ../sample_policies/*_policy.*
     python -m app.manage evaluate-rag
@@ -119,7 +120,15 @@ def main(
     reset.add_argument("--email", required=True)
     commands.add_parser("list-users", help="list every account")
     data = commands.add_parser("import-customers", help="load the UCI credit card default data")
-    data.add_argument("--csv", type=Path, help="a downloaded copy; otherwise it is downloaded")
+    data.add_argument(
+        "--csv",
+        type=Path,
+        help="a downloaded copy (CSV, .xls or .xlsx); otherwise it is downloaded",
+    )
+    emails = commands.add_parser(
+        "import-emails", help="add the EMAIL column of a dataset copy to the loaded customers"
+    )
+    emails.add_argument("file", type=Path)
     data.add_argument("--replace", action="store_true", help="delete the loaded data first")
     commands.add_parser("train-model", help="train the risk model and score every customer")
     docs = commands.add_parser("add-documents", help="upload and index policy documents")
@@ -139,6 +148,16 @@ def main(
             for user in users:
                 print(f"{user['id']:>4}  {user['role']:<5}  {user['email']}  ({user['full_name']})")
             print(f"{len(users)} account(s)")
+            return 0
+        if args.command == "import-emails":
+            result = Portfolio(db).import_emails(args.file)
+            print(f"Added email addresses to {result['updated']} customers.")
+            if result["unknown_ids"]:
+                print(
+                    f"Skipped {len(result['unknown_ids'])} rows whose ID is not a loaded customer."
+                )
+            if result["without_email"]:
+                print(f"{result['without_email']} customers still have no email address.")
             return 0
         if args.command == "import-customers":
             count = Portfolio(db).import_data(args.csv, replace=args.replace)

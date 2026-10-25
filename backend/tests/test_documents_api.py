@@ -44,7 +44,8 @@ def test_upload_pdf_records_page_count(client):
 def test_invalid_files_are_rejected_with_clear_errors(client, settings):
     cases = [
         ("tool.exe", b"MZ\x90", 415, "unsupported_file_type"),
-        ("notes.docx", b"PK\x03\x04", 415, "unsupported_file_type"),
+        ("notes.rtf", b"{\\rtf1 notes}", 415, "unsupported_file_type"),
+        ("fake.docx", b"just some text", 400, "invalid_file"),
         ("fake.pdf", b"not a pdf at all", 400, "invalid_file"),
         ("empty.txt", b"", 400, "invalid_file"),
         ("binary.txt", b"\x00\x01\x02\x03", 400, "invalid_file"),
@@ -86,7 +87,7 @@ def test_listing_shows_status_and_metadata(client, indexed):
     documents = client.get("/api/admin/documents").json()["documents"]
     assert {d["filename"] for d in documents} == set(indexed)
     assert all(d["status"] == "indexed" and d["chunk_count"] > 0 for d in documents)
-    assert {d["file_type"] for d in documents} == {"pdf", "txt", "md"}
+    assert {d["file_type"] for d in documents} == {"pdf", "docx", "txt", "md"}
     assert all("sha256" not in d and "stored_name" not in d for d in documents)
 
 
@@ -176,6 +177,6 @@ def test_busy_document_cannot_be_deleted_or_reindexed(client, indexed):
 def test_rebuild_reindexes_everything(client, settings, indexed):
     total = chunk_rows(settings)
     response = client.post("/api/admin/kb/rebuild")
-    assert response.status_code == 202 and response.json() == {"queued": 3}
+    assert response.status_code == 202 and response.json() == {"queued": 4}
     stats = client.get("/api/admin/kb/stats").json()
     assert stats["status"] == "ready" and stats["total_chunks"] == total

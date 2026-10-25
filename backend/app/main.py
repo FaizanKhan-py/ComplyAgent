@@ -32,11 +32,13 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from . import auth, schemas
 from .config import BACKEND_DIR, SUPPORTED_EXTENSIONS, Settings
 from .db import Database, EmailTaken
+from .decision import DecisionUnavailable, recommend
 from .embeddings import Embedder, EmbeddingError, build_embedder
 from .extraction import ValidationError
 from .guidance import customer_guidance
 from .knowledge_base import Busy, DuplicateDocument, KnowledgeBase, NotFound
-from .llm import AnswerGenerator, build_generator
+from .llm import AnswerGenerator, LLMError, build_generator
+from .messages import generate_message
 from .portfolio import SORT_COLUMNS, CustomerExists, Portfolio
 from .predictor import SUPPORTED_EXTENSIONS as DATASET_EXTENSIONS
 from .predictor import PredictionFailed, Predictor
@@ -524,6 +526,9 @@ def create_app(
         search: str = Query("", max_length=50),
         risk: schemas.RiskLevel | None = None,
         actual: Literal["defaulted", "paid"] | None = None,
+        payment: Literal["overdue", "current"] | None = Query(
+            None, description="overdue: late in the latest month; current: not late"
+        ),
         sort: str = Query("id", enum=sorted(SORT_COLUMNS)),
         order: Literal["asc", "desc"] = "asc",
         page: int = Query(1, ge=1, le=100_000),
@@ -532,7 +537,7 @@ def create_app(
         if sort not in SORT_COLUMNS:
             raise ApiError(422, "invalid_request", f"sort: must be one of {sorted(SORT_COLUMNS)}")
         return portfolio.list_customers(
-            search, risk, actual, sort, order == "desc", page, page_size
+            search, risk, actual, payment, sort, order == "desc", page, page_size
         )
 
     @app.post(
@@ -582,6 +587,50 @@ def create_app(
             result = customer_guidance(kb, portfolio, customer_id)
         except EmbeddingError as exc:
             raise ApiError(503, "embeddings_unavailable", str(exc)) from exc
+        if result is None:
+            raise ApiError(404, "not_found", "Customer not found.")
+        return result
+
+    @app.post(
+        "/api/admin/customers/{customer_id}/recommendation",
+        response_model=schemas.CustomerRecommendation,
+        dependencies=[admin],
+        tags=["portfolio"],
+        responses=ERROR_RESPONSES,
+    )
+    def recommendation(customer_id: int):
+        """The Decision Agent's next action for this customer, with the evidence it used."""
+        try:
+            result = recommend(kb, portfolio, kb.generator, customer_id)
+        except EmbeddingError as exc:
+            raise ApiError(503, "embeddings_unavailable", str(exc)) from exc
+        except DecisionUnavailable as exc:
+            status = 502 if exc.code == "llm_bad_output" else 503
+            raise ApiError(status, exc.code, exc.message) from exc
+        except LLMError as exc:
+            raise ApiError(503 if exc.retryable else 502, exc.code, exc.message) from exc
+        if result is None:
+            raise ApiError(404, "not_found", "Customer not found.")
+        return result
+
+    @app.post(
+        "/api/admin/customers/{customer_id}/message",
+        response_model=schemas.CustomerMessage,
+        dependencies=[admin],
+        tags=["portfolio"],
+        responses=ERROR_RESPONSES,
+    )
+    def message(customer_id: int):
+        """A checked draft collections message for this customer. Nothing is sent."""
+        try:
+            result = generate_message(kb, portfolio, kb.generator, customer_id)
+        except EmbeddingError as exc:
+            raise ApiError(503, "embeddings_unavailable", str(exc)) from exc
+        except DecisionUnavailable as exc:
+            status = 502 if exc.code == "llm_bad_output" else 503
+            raise ApiError(status, exc.code, exc.message) from exc
+        except LLMError as exc:
+            raise ApiError(503 if exc.retryable else 502, exc.code, exc.message) from exc
         if result is None:
             raise ApiError(404, "not_found", "Customer not found.")
         return result

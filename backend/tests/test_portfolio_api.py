@@ -100,10 +100,22 @@ def test_customers_are_found_filtered_sorted_and_paged(loaded):
     assert ids(loaded.get("/api/admin/customers?actual=paid")) == [2, 3]
     assert ids(loaded.get("/api/admin/customers?risk=high")) == []  # nothing is scored yet
     assert ids(loaded.get("/api/admin/customers?sort=latest_status&order=desc")) == [4, 1, 3, 2]
+    # Late in the latest month: 4 is 3 months late, 1 is 2; 2 paid in full, 3 paid the minimum.
+    overdue = loaded.get("/api/admin/customers?payment=overdue").json()
+    assert [c["customer_id"] for c in overdue["customers"]] == [1, 4] and overdue["total"] == 2
+    assert ids(loaded.get("/api/admin/customers?payment=current")) == [2, 3]
+    assert ids(loaded.get("/api/admin/customers?payment=overdue&actual=paid")) == []
     paged = loaded.get("/api/admin/customers?sort=limit_bal&order=desc&page_size=1&page=2")
     assert ids(paged) == [3] and paged.json()["total"] == 4
 
-    for bad in ("sort=password_hash", "risk=huge", "actual=x", "page=0", "page_size=500"):
+    for bad in (
+        "sort=password_hash",
+        "risk=huge",
+        "actual=x",
+        "payment=x",
+        "page=0",
+        "page_size=500",
+    ):
         response = loaded.get(f"/api/admin/customers?{bad}")
         assert response.status_code == 422, bad
         assert response.json()["error"]["code"] == "invalid_request"

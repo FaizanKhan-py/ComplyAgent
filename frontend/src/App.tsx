@@ -9,7 +9,6 @@ import { Assistant } from './pages/Assistant'
 import { CustomerRecord } from './pages/CustomerRecord'
 import { Customers } from './pages/Customers'
 import { Documents } from './pages/Documents'
-import { KnowledgeBase } from './pages/KnowledgeBase'
 import { Login } from './pages/Login'
 import { Playground } from './pages/Playground'
 import { PredictDataset } from './pages/PredictDataset'
@@ -80,12 +79,7 @@ export default function App() {
         ) : null}
         <Route path="assistant" element={<Assistant showAdminTabs={isAdmin} />}>
           <Route index element={<Playground showModelStatus={isAdmin} />} />
-          {isAdmin ? (
-            <>
-              <Route path="documents" element={<Documents />} />
-              <Route path="knowledge-base" element={<KnowledgeBase />} />
-            </>
-          ) : null}
+          {isAdmin ? <Route path="documents" element={<Documents />} /> : null}
         </Route>
         <Route path="*" element={<Navigate to={home} replace />} />
       </Route>
