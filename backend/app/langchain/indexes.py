@@ -30,6 +30,7 @@ class PolicyRetriever(BaseRetriever):
                 page_content=chunk["text"],
                 metadata={
                     "filename": chunk["filename"],
+                    "file_type": chunk["file_type"],
                     "page_number": chunk["page_number"],
                     "score": chunk["score"],
                     "document_id": chunk["document_id"],
@@ -40,13 +41,13 @@ class PolicyRetriever(BaseRetriever):
         ]
 
 
-def format_documents(documents: list[Document]) -> str:
+def format_documents(documents: list[Document], numbers: list[int] | None = None) -> str:
     """Retrieved documents as numbered, escaped <source> blocks: data the model can cite, which
-    cannot close its own tag."""
+    cannot close its own tag. `numbers` keeps citations unique across several searches."""
     if not documents:
         return "No indexed policy passage matches this query."
     blocks = []
-    for number, doc in enumerate(documents, start=1):
+    for number, doc in zip(numbers or range(1, len(documents) + 1), documents, strict=True):
         page = doc.metadata.get("page_number")
         page_attr = f' page="{page}"' if page is not None else ""
         name = html.escape(str(doc.metadata.get("filename", "")), quote=True)

@@ -361,18 +361,23 @@ export interface CustomerMessage {
   model: string | null
 }
 
-// --- Collections Agent (LangChain agent) -----------------------------------------------------
+// --- AI Assistant (LangChain agent) ----------------------------------------------------------
 
-export interface AgentRequest {
+export interface AssistantRequest {
   message: string
   /** Continue a conversation; null starts a new one. */
   conversation_id: string | null
 }
 
-export interface AgentReply {
+/** One reply: shaped like a policy answer (text, [n] sources), plus the tools the agent used. */
+export interface AssistantReply {
   answer: string
+  answer_mode: AnswerMode
+  insufficient_evidence: boolean
+  sources: Source[]
+  model: string | null
+  warning: string | null
   conversation_id: string
-  /** The tools the agent called, in order, with their arguments as JSON. */
+  /** The tools the assistant called, in order, with their arguments as JSON. */
   steps: { tool: string; input: string }[]
-  model: string
 }

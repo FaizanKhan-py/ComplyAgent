@@ -15,8 +15,7 @@ dataset (30,000 customers, six months of payment history each), with made-up ema
 | Risk dashboard | Dashboard | Portfolio totals, late-payment trend, risk groups, model scores |
 | Customer records | Customers | Search, filter and open any customer: details, payment history, risk |
 | Default prediction | Customer page, Predict | XGBoost model trained in the notebook, saved as files the backend loads |
-| Policy assistant | AI Assistant → Chat | RAG: retrieves policy passages, answers with [n] citations, remembers the conversation |
-| Collections Agent | AI Assistant → Agent (admins) | A LangChain agent that calls read-only tools: policies, customers, portfolio, Decision Agent |
+| AI Assistant | AI Assistant | One chat. A LangChain agent searches the policies and cites them [n]; for admins it also looks up customers, the portfolio and the Decision Agent. Remembers the conversation |
 | Decision Agent | Customer page → Generate message | Recommends reminder / payment plan / call / escalation; every reason cites a fact or policy |
 | Email drafts | Customer page | Written in the policy's tone, then checked: no threats, no invented amounts or links |
 | Policy documents | AI Assistant → Documents | Upload PDF, Word, text or Markdown; they are chunked, embedded and indexed |
@@ -47,11 +46,11 @@ One file per LangChain component. Each one is used by the app, not kept as an ex
 |---|---|---|---|
 | `models.py` | Models | `AzureChatOpenAI` or `ChatAnthropic`, picked by `LLM_PROVIDER`; one error mapping for every provider | everything below |
 | `prompts.py` | Prompts | Every system prompt, and the `ChatPromptTemplate`s (with a `MessagesPlaceholder` for memory) | chains, agent |
-| `chains.py` | Chains | LCEL pipelines: `prompt \| model.with_structured_output(schema)` | policy assistant, Decision Agent, email writer |
+| `chains.py` | Chains | LCEL pipelines: `prompt \| model.with_structured_output(schema)` | customer policy guidance, Decision Agent, email writer |
 | `memory.py` | Memory | Window memory (`trim_messages`) for the assistant; LangGraph `InMemorySaver` for the agent's conversations | `llm.py`, agent |
 | `llm.py` | (assembly) | `LangChainGenerator`, built from models + prompts + chains + memory | RAG answers, Decision Agent, email writer |
 | `indexes.py` | Indexes | `PolicyRetriever`, a `BaseRetriever` over the embedded policy chunks, returning `Document`s | agent's `search_policies` tool |
-| `agents.py` | Agents | The Collections Agent: `create_agent` with six `@tool`s | `POST /api/admin/agent/chat` |
+| `agents.py` | Agents | The AI Assistant: `create_agent` with six `@tool`s (users get `search_policies` only), numbered sources | `POST /api/assistant/chat` |
 
 `langchain/llm.py` is the single entry point the rest of the backend calls
 (`LangChainGenerator`).
@@ -94,7 +93,7 @@ app/
 | | `tables.py` | Reads CSV, .xls and .xlsx tables |
 
 **frontend/src/**: `App.tsx` (routes), `api/` (client and types), `pages/` (one file per
-screen, e.g. `AgentChat.tsx` for the agent), `components/` (shared UI), `lib/` (formatting).
+screen, e.g. `Playground.tsx` for the AI Assistant), `components/` (shared UI), `lib/` (formatting).
 
 **Other folders:** `notebooks/` (exploration and model training), `backend/models/risk_model/`
 (the trained model files), `sample_policies/` (example policies and evaluation questions),

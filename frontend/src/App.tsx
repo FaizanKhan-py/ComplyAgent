@@ -5,7 +5,6 @@ import { AuthShell } from './components/AuthShell'
 import { Layout } from './components/Layout'
 import { ErrorState, Loading } from './components/ui'
 import { AddCustomer } from './pages/AddCustomer'
-import { AgentChat } from './pages/AgentChat'
 import { Assistant } from './pages/Assistant'
 import { CustomerRecord } from './pages/CustomerRecord'
 import { Customers } from './pages/Customers'
@@ -80,7 +79,6 @@ export default function App() {
         ) : null}
         <Route path="assistant" element={<Assistant showAdminTabs={isAdmin} />}>
           <Route index element={<Playground showModelStatus={isAdmin} />} />
-          {isAdmin ? <Route path="agent" element={<AgentChat />} /> : null}
           {isAdmin ? <Route path="documents" element={<Documents />} /> : null}
         </Route>
         <Route path="*" element={<Navigate to={home} replace />} />

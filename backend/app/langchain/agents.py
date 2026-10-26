@@ -1,8 +1,10 @@
-"""LangChain AGENTS: the Collections Agent, a tool-calling agent built with create_agent.
+"""LangChain AGENTS: the AI Assistant, a tool-calling agent built with create_agent.
 
-An officer asks in plain words ("Which high-risk customers are overdue?", "What does the policy
-say about customer 4?"). The model decides which tools to call, reads their results and answers.
-The tools only read: the agent advises and never sends an email or changes a record.
+Staff ask in plain words ("How long can a hardship plan last?", "Which high-risk customers are
+overdue?", "What does the policy say about customer 4?"). The model decides which tools to call,
+reads their results and answers. The tools only read: the assistant advises and never sends an
+email or changes a record. Administrators get every tool; other users get search_policies only,
+so they never see customer data.
 
     search_policies          the policy index (indexes.PolicyRetriever)
     customer_overview        one customer's account facts and risk score
@@ -11,14 +13,18 @@ The tools only read: the agent advises and never sends an email or changes a rec
     portfolio_summary        the whole portfolio in numbers
     recommend_next_action    the Decision Agent's checked recommendation for one customer
 
-Customer tools never return sex, education, marital status, age or the email address, so the
-model cannot use or reveal them. The conversation is remembered per conversation id
-(memory.AgentMemory), so follow-up questions work.
+Every policy passage the assistant reads is numbered across the whole answer and returned as a
+source, so the answer's [n] citations can be checked and shown next to it. Customer tools never
+return sex, education, marital status, age or the email address, so the model cannot use or
+reveal them. The conversation is remembered per user and conversation id (memory.AgentMemory),
+so follow-up questions work.
 """
 
 from __future__ import annotations
 
 import json
+import re
+from contextvars import ContextVar
 from typing import Any
 
 from langchain_core.messages import AIMessage
@@ -31,8 +37,28 @@ from .prompts import AGENT_PROMPT
 MAX_LISTED = 25  # customers per list_overdue_customers call
 
 
-def build_tools(kb: Any, portfolio: Any, generator: Any) -> list:
-    """The agent's tools, bound to this app's knowledge base, portfolio and Decision Agent."""
+class _Sources:
+    """The policy passages read while answering one message, numbered 1, 2, ... once each."""
+
+    def __init__(self) -> None:
+        self.documents: list = []
+        self._numbers: dict[tuple, int] = {}
+
+    def number(self, doc) -> int:
+        key = (doc.metadata["document_id"], doc.metadata["chunk_index"])
+        if key not in self._numbers:
+            self.documents.append(doc)
+            self._numbers[key] = len(self.documents)
+        return self._numbers[key]
+
+
+# Set for each message in ask(); the tools run in copies of that context and share the object.
+_current_sources: ContextVar[_Sources | None] = ContextVar("sources", default=None)
+
+
+def build_tools(kb: Any, portfolio: Any, generator: Any, customer_tools: bool = True) -> list:
+    """The assistant's tools, bound to this app's knowledge base, portfolio and Decision Agent.
+    Without `customer_tools` it can only search the policies."""
     from ..decisions.decision import DecisionUnavailable, case_facts, recommend
     from ..decisions.guidance import describe
 
@@ -45,8 +71,10 @@ def build_tools(kb: Any, portfolio: Any, generator: Any) -> list:
     def search_policies(query: str) -> str:
         """Search the company's indexed collections policies. Use it for any question about
         rules, stages, tone, contact hours, hardship plans or escalation. Returns numbered
-        passages with their document names."""
-        return format_documents(retriever.invoke(query))
+        passages with their document names; cite them by number, e.g. [2]."""
+        documents = retriever.invoke(query)
+        sources = _current_sources.get() or _Sources()
+        return format_documents(documents, [sources.number(d) for d in documents])
 
     @tool
     def customer_overview(customer_id: int) -> str:
@@ -148,6 +176,8 @@ def build_tools(kb: Any, portfolio: Any, generator: Any) -> list:
             f"{rec.priority.value}, needs human review: {rec.needs_human_review}.\n{reasons}"
         )
 
+    if not customer_tools:
+        return [search_policies]
     return [
         search_policies,
         customer_overview,
@@ -158,31 +188,44 @@ def build_tools(kb: Any, portfolio: Any, generator: Any) -> list:
     ]
 
 
-class CollectionsAgent:
-    """One agent per app, with memory per conversation."""
+class AssistantAgent:
+    """The AI Assistant: one agent for a set of tools, with memory per user and conversation."""
 
-    def __init__(self, chat_model: Any, model_name: str, kb: Any, portfolio: Any, generator: Any):
+    def __init__(
+        self,
+        chat_model: Any,
+        model_name: str,
+        kb: Any,
+        portfolio: Any,
+        generator: Any,
+        customer_tools: bool = True,
+    ):
         from langchain.agents import create_agent
 
         self.model_name = model_name
         self.memory = AgentMemory()
         self._agent = create_agent(
             chat_model,
-            tools=build_tools(kb, portfolio, generator),
+            tools=build_tools(kb, portfolio, generator, customer_tools),
             system_prompt=AGENT_PROMPT,
             checkpointer=self.memory.checkpointer,
         )
 
-    def ask(self, message: str, conversation_id: str | None = None) -> dict:
-        """The answer and the tool calls the agent made for it. Model errors propagate, for
-        models.classify_error."""
-        if conversation_id and not self.memory.knows(conversation_id):
-            conversation_id = None  # forgotten, or never this server's: start a new one
-        conversation_id, config = self.memory.thread(conversation_id)
+    def ask(self, message: str, owner: str, conversation_id: str | None = None) -> dict:
+        """The answer, the policy passages it read (as sources) and the tool calls it made.
+        Model errors propagate, for models.classify_error."""
+        if conversation_id and not self.memory.knows(owner, conversation_id):
+            conversation_id = None  # forgotten, or not this user's: start a new one
+        conversation_id, config = self.memory.thread(owner, conversation_id)
         before = len(self._history(config))
-        result = self._agent.invoke(
-            {"messages": [{"role": "user", "content": message}]}, config=config
-        )
+        sources = _Sources()
+        token = _current_sources.set(sources)
+        try:
+            result = self._agent.invoke(
+                {"messages": [{"role": "user", "content": message}]}, config=config
+            )
+        finally:
+            _current_sources.reset(token)
         new = result["messages"][before:]
         steps = [
             {"tool": call["name"], "input": json.dumps(call["args"], ensure_ascii=False)}
@@ -194,11 +237,34 @@ class CollectionsAgent:
             (m.text for m in reversed(new) if isinstance(m, AIMessage) and not m.tool_calls),
             "",
         )
+        # Keep only citations of passages read for this answer; drop any other [n].
+        valid = set(range(1, len(sources.documents) + 1))
+        answer = re.sub(
+            r"\s*\[(\d+)\]", lambda m: m.group(0) if int(m.group(1)) in valid else "", answer
+        ).strip()
+        cited = {int(n) for n in re.findall(r"\[(\d+)\]", answer)}
         return {
-            "answer": answer.strip(),
+            "answer": answer,
+            "answer_mode": "generated",
+            "insufficient_evidence": False,
+            "sources": [
+                {
+                    "rank": number,
+                    "document_id": doc.metadata["document_id"],
+                    "filename": doc.metadata["filename"],
+                    "file_type": doc.metadata["file_type"],
+                    "page_number": doc.metadata["page_number"],
+                    "chunk_index": doc.metadata["chunk_index"],
+                    "score": doc.metadata["score"],
+                    "text": doc.page_content,
+                    "cited": number in cited,
+                }
+                for number, doc in enumerate(sources.documents, start=1)
+            ],
+            "model": self.model_name,
+            "warning": None,
             "conversation_id": conversation_id,
             "steps": steps,
-            "model": self.model_name,
         }
 
     def _history(self, config: dict) -> list:

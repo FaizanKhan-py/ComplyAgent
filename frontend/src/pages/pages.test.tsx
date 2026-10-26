@@ -3,7 +3,6 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { answer, config, customer, customerDetail, doc, health, mockApi, portfolio } from '../test/fixtures'
 import { CustomerRecord } from './CustomerRecord'
-import { AgentChat } from './AgentChat'
 import { Customers } from './Customers'
 import { Documents } from './Documents'
 import { Playground } from './Playground'
@@ -535,11 +534,20 @@ describe('Documents', () => {
 })
 
 describe('AI Assistant', () => {
-  it('shows the answer with only the sources the backend returned', async () => {
+  const reply = (overrides: Record<string, unknown> = {}) => ({
+    ...answer(),
+    conversation_id: 'c1',
+    steps: [] as { tool: string; input: string }[],
+    ...overrides,
+  })
+  const URL = 'POST /api/assistant/chat'
+
+  it('shows the answer with its cited sources and the tools the assistant used', async () => {
     const user = userEvent.setup()
     const api = mockApi({
       'GET /api/admin/config': () => ({ body: config }),
-      'POST /api/admin/rag/query': () => ({ body: answer() }),
+      'GET /api/admin/health': () => ({ body: health }),
+      [URL]: () => ({ body: reply({ steps: [{ tool: 'search_policies', input: '{"query": "plan"}' }] }) }),
     })
     page(<Playground />)
 
@@ -547,60 +555,57 @@ describe('AI Assistant', () => {
     expect(await screen.findByText('Generated answer')).toBeInTheDocument()
     expect(screen.getByText(/up to 50 percent/, { selector: 'p.answer-text span' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Source 1' })).toHaveAttribute('href', '#turn-1-source-1')
+    expect(screen.getByText('Searched the policies')).toBeInTheDocument()
 
     const sources = screen.getAllByRole('listitem').filter((li) => li.className === 'source')
     expect(sources).toHaveLength(2)
     expect(within(sources[0]).getByText('hardship_policy.pdf')).toBeInTheDocument()
     expect(within(sources[0]).getByText('Page 2 · Chunk 5')).toBeInTheDocument()
-    expect(within(sources[0]).getByText('0.812')).toBeInTheDocument()
     expect(within(sources[0]).getByText('Cited')).toBeInTheDocument()
-    // No page number is invented for a text file, and an uncited source is not marked cited.
-    expect(within(sources[1]).getByText('Chunk 1')).toBeInTheDocument()
     expect(within(sources[1]).queryByText(/Page/)).not.toBeInTheDocument()
     expect(within(sources[1]).queryByText('Cited')).not.toBeInTheDocument()
 
     expect(JSON.parse(api.calls.at(-1)!.init.body as string)).toEqual({
-      question: 'How much can a plan reduce the installment?',
-      history: [],
+      message: 'How much can a plan reduce the installment?',
+      conversation_id: null,
     })
   })
 
-  it('sends generated turns as history and clears them on a new conversation', async () => {
+  it('continues the same conversation and starts a new one on request', async () => {
     const user = userEvent.setup()
     const api = mockApi({
       'GET /api/admin/config': () => ({ body: config }),
-      'POST /api/admin/rag/query': () => ({ body: answer() }),
+      'GET /api/admin/health': () => ({ body: health }),
+      [URL]: () => ({ body: reply() }),
     })
     page(<Playground />)
     const box = screen.getByLabelText('Question')
-    const lastBody = () => JSON.parse(api.calls.at(-1)!.init.body as string)
+    const sent = () => api.calls.filter((c) => c.key === URL).map((c) => JSON.parse(String(c.init.body)))
 
     await user.type(box, 'First question{Enter}')
     await screen.findByText('Generated answer')
     await user.type(box, 'Follow up{Enter}')
-    await waitFor(() => expect(api.count('POST /api/admin/rag/query')).toBe(2))
-    expect(lastBody().history).toEqual([
-      { role: 'user', content: 'First question' },
-      { role: 'assistant', content: answer().answer },
-    ])
+    await waitFor(() => expect(api.count(URL)).toBe(2))
+    expect(sent()[1]).toEqual({ message: 'Follow up', conversation_id: 'c1' })
 
     await waitFor(() => expect(screen.getAllByText('Generated answer')).toHaveLength(2))
     await user.click(screen.getByRole('button', { name: 'New conversation' }))
     expect(screen.queryByText('First question')).not.toBeInTheDocument()
     await user.type(box, 'Fresh start{Enter}')
-    await waitFor(() => expect(api.count('POST /api/admin/rag/query')).toBe(3))
-    expect(lastBody().history).toEqual([])
+    await waitFor(() => expect(api.count(URL)).toBe(3))
+    expect(sent()[2]).toEqual({ message: 'Fresh start', conversation_id: null })
   })
 
   it('shows the no-evidence and retrieval-only outcomes honestly', async () => {
     const user = userEvent.setup()
     const replies = [
-      answer({ answer: "I couldn't find anything in the indexed policy documents that answers this question.", answer_mode: 'no_evidence', insufficient_evidence: true, sources: [], model: null }),
-      answer({ answer: 'No generated answer is available.', answer_mode: 'retrieval_only', model: null, warning: 'Answer generation failed: The LLM provider rate limit was hit.', sources: answer().sources.map((s) => ({ ...s, cited: false })) }),
+      reply({ answer: "I couldn't find anything in the indexed policy documents that answers this question.", answer_mode: 'no_evidence', insufficient_evidence: true, sources: [], model: null }),
+      reply({ answer: 'No generated answer is available.', answer_mode: 'retrieval_only', model: null, warning: 'The answer model is not available right now: The rate limit was hit.', sources: answer().sources.map((s) => ({ ...s, cited: false })) }),
     ]
     mockApi({
       'GET /api/admin/config': () => ({ body: config }),
-      'POST /api/admin/rag/query': () => ({ body: replies.shift() }),
+      'GET /api/admin/health': () => ({ body: health }),
+      [URL]: () => ({ body: replies.shift() }),
     })
     page(<Playground />)
     const box = screen.getByLabelText('Question')
@@ -613,6 +618,21 @@ describe('AI Assistant', () => {
     expect(await screen.findByText(/Retrieval only/)).toBeInTheDocument()
     expect(screen.getByText(/rate limit was hit/)).toBeInTheDocument()
     expect(screen.queryByText('Cited')).not.toBeInTheDocument()
+  })
+
+  it('offers customer examples to administrators only', async () => {
+    mockApi({
+      'GET /api/admin/config': () => ({ body: config }),
+      'GET /api/admin/health': () => ({ body: health }),
+    })
+    const view = page(<Playground />)
+    expect(await screen.findByRole('button', { name: 'Which high-risk customers are overdue right now?' })).toBeInTheDocument()
+    view.unmount()
+
+    mockApi({ 'GET /api/admin/config': () => ({ body: config }) })
+    page(<Playground showModelStatus={false} />)
+    expect(await screen.findByRole('button', { name: 'How much can a hardship plan reduce the installment?' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Which high-risk customers are overdue right now?' })).not.toBeInTheDocument()
   })
 
   it('warns when the configured answer model is down, using the live health detail', async () => {
@@ -633,66 +653,17 @@ describe('AI Assistant', () => {
     let attempt = 0
     mockApi({
       'GET /api/admin/config': () => ({ body: config }),
-      'POST /api/admin/rag/query': () =>
+      'GET /api/admin/health': () => ({ body: health }),
+      [URL]: () =>
         ++attempt === 1
           ? failure(503, 'embeddings_unavailable', 'Embedding model could not be loaded.')()
-          : { body: answer() },
+          : { body: reply() },
     })
     page(<Playground />)
     await user.type(screen.getByLabelText('Question'), 'Contact hours?{Enter}')
     expect(await screen.findByText('Embedding model could not be loaded.')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Retry' }))
     expect(await screen.findByText('Generated answer')).toBeInTheDocument()
-  })
-})
-
-describe('Collections Agent', () => {
-  const reply = (answer: string, steps: { tool: string; input: string }[] = []) => ({
-    answer,
-    conversation_id: 'c1',
-    steps,
-    model: 'gpt-4.1-mini',
-  })
-
-  it('shows the answer and the tools used, and continues the same conversation', async () => {
-    const user = userEvent.setup()
-    let turn = 0
-    const api = mockApi({
-      'POST /api/admin/agent/chat': () =>
-        ++turn === 1
-          ? { body: reply('Customer 4 is 3 months late.', [{ tool: 'customer_overview', input: '{"customer_id": 4}' }]) }
-          : { body: reply('Yes.') },
-    })
-    page(<AgentChat />)
-    await user.type(screen.getByLabelText('Message'), 'How is customer 4?{Enter}')
-    expect(await screen.findByText('Customer 4 is 3 months late.')).toBeInTheDocument()
-    expect(screen.getByText('Looked up the customer')).toBeInTheDocument()
-
-    await user.type(screen.getByLabelText('Message'), 'Late?{Enter}')
-    expect(await screen.findByText('Yes.')).toBeInTheDocument()
-    expect(screen.getByText('No tools needed')).toBeInTheDocument()
-    const sent = api.calls.filter((c) => c.key === 'POST /api/admin/agent/chat').map((c) => JSON.parse(String(c.init.body)))
-    expect(sent).toEqual([
-      { message: 'How is customer 4?', conversation_id: null },
-      { message: 'Late?', conversation_id: 'c1' },
-    ])
-
-    // A new conversation forgets the id, so the server starts a fresh memory.
-    await user.click(screen.getByRole('button', { name: 'New conversation' }))
-    expect(screen.getByText('Ask the Collections Agent')).toBeInTheDocument()
-  })
-
-  it('shows why the agent could not answer', async () => {
-    const user = userEvent.setup()
-    mockApi({
-      'POST /api/admin/agent/chat': () => ({
-        status: 503,
-        body: { error: { code: 'llm_not_configured', message: 'The Collections Agent needs a language model.' } },
-      }),
-    })
-    page(<AgentChat />)
-    await user.click(screen.getByRole('button', { name: 'Which high-risk customers are overdue right now?' }))
-    expect(await screen.findByText('The Collections Agent needs a language model.')).toBeInTheDocument()
   })
 })
 

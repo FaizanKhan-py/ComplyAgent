@@ -217,7 +217,10 @@ class KnowledgeBase:
         top_k: int | None = None,
         min_score: float | None = None,
         document_ids: list[str] | None = None,
+        generate: bool = True,
     ) -> dict:
+        """`generate=False` returns the retrieved passages without calling the model (the
+        assistant's fallback when the model is down)."""
         history = history or []
         top_k, min_score = self._limits(top_k, min_score)
 
@@ -260,7 +263,7 @@ class KnowledgeBase:
             result["answer"] = EMPTY_KB_ANSWER if searched == 0 else NO_EVIDENCE_ANSWER
             return result
 
-        if self.generator is None:
+        if self.generator is None or not generate:
             result.update(answer=RETRIEVAL_ONLY_ANSWER, answer_mode="retrieval_only")
             result["insufficient_evidence"] = False
             return result

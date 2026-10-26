@@ -38,8 +38,11 @@ def chat_history(history: list[dict[str, str]]) -> list[BaseMessage]:
 
 
 class AgentMemory:
-    """The agent's conversations. `checkpointer` goes to create_agent; `thread(id)` gives the
-    config for one conversation and forgets the oldest ones beyond the limit."""
+    """The agent's conversations. `checkpointer` goes to create_agent; `thread(owner, id)` gives
+    the config for one conversation and forgets the oldest ones beyond the limit.
+
+    Each conversation belongs to the user who started it: the thread is keyed by owner and id,
+    so another user who learns an id cannot read or continue that conversation."""
 
     def __init__(self, limit: int = MAX_AGENT_CONVERSATIONS) -> None:
         from langgraph.checkpoint.memory import InMemorySaver
@@ -49,17 +52,22 @@ class AgentMemory:
         self._recent: OrderedDict[str, None] = OrderedDict()
         self._lock = threading.Lock()
 
-    def thread(self, conversation_id: str | None) -> tuple[str, dict]:
+    @staticmethod
+    def _key(owner: str, conversation_id: str) -> str:
+        return f"{owner}:{conversation_id}"
+
+    def thread(self, owner: str, conversation_id: str | None) -> tuple[str, dict]:
         """(conversation id, invoke config). A new id when none is given."""
         conversation_id = conversation_id or uuid.uuid4().hex
+        key = self._key(owner, conversation_id)
         with self._lock:
-            self._recent[conversation_id] = None
-            self._recent.move_to_end(conversation_id)
+            self._recent[key] = None
+            self._recent.move_to_end(key)
             while len(self._recent) > self._limit:
                 oldest, _ = self._recent.popitem(last=False)
                 self.checkpointer.delete_thread(oldest)
-        return conversation_id, {"configurable": {"thread_id": conversation_id}}
+        return conversation_id, {"configurable": {"thread_id": key}}
 
-    def knows(self, conversation_id: str) -> bool:
+    def knows(self, owner: str, conversation_id: str) -> bool:
         with self._lock:
-            return conversation_id in self._recent
+            return self._key(owner, conversation_id) in self._recent

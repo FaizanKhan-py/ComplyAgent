@@ -424,7 +424,7 @@ class DatasetPrediction(BaseModel):
     csv: str
 
 
-class AgentRequest(BaseModel):
+class AssistantRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
     conversation_id: str | None = Field(
         default=None,
@@ -432,14 +432,25 @@ class AgentRequest(BaseModel):
         description="Continue a conversation. Omit it to start a new one.",
     )
 
+    @field_validator("message")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("message must not be blank")
+        return value.strip()
 
-class AgentStep(BaseModel):
+
+class AssistantStep(BaseModel):
     tool: str
     input: str = Field(description="The tool's arguments, as JSON.")
 
 
-class AgentReply(BaseModel):
+class AssistantReply(BaseModel):
     answer: str
+    answer_mode: Literal["generated", "retrieval_only", "no_evidence"]
+    insufficient_evidence: bool
+    sources: list[Source] = Field(description="The policy passages read, numbered as cited.")
+    model: str | None
+    warning: str | None
     conversation_id: str
-    steps: list[AgentStep] = Field(description="The tools the agent called, in order.")
-    model: str
+    steps: list[AssistantStep] = Field(description="The tools the assistant called, in order.")

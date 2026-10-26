@@ -9,6 +9,7 @@ import hmac
 import logging
 import threading
 import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import Literal
 
@@ -36,7 +37,7 @@ from .customers.portfolio import SORT_COLUMNS, CustomerExists, Portfolio
 from .decisions.decision import DecisionUnavailable, recommend
 from .decisions.guidance import customer_guidance
 from .decisions.messages import generate_message
-from .langchain.agents import CollectionsAgent
+from .langchain.agents import AssistantAgent
 from .langchain.llm import AnswerGenerator, LLMError, build_generator
 from .langchain.models import classify_error
 from .rag.embeddings import Embedder, EmbeddingError, build_embedder
@@ -699,48 +700,66 @@ def create_app(
         except EmbeddingError as exc:
             raise ApiError(503, "embeddings_unavailable", str(exc)) from exc
 
-    # --- admin: Collections Agent (LangChain agent with tools) -----------------------------
+    # --- AI Assistant: one chat for everyone (LangChain agent with tools) -------------------
+    #
+    # Administrators' assistant has every tool (policies, customers, portfolio, Decision Agent);
+    # everyone else's can only search the policies. Without a model, or when the model fails,
+    # the reply is the matching policy passages, as the policy search alone would give.
 
-    agent: CollectionsAgent | None = None
-    agent_lock = threading.Lock()
+    assistants: dict[bool, AssistantAgent] = {}
+    assistants_lock = threading.Lock()
 
-    def _agent() -> CollectionsAgent:
-        """Built on first use, so the app starts without it when no model is configured."""
-        nonlocal agent
-        chat_model = getattr(kb.generator, "chat_model", None)
-        if chat_model is None:
-            raise ApiError(
-                503,
-                "llm_not_configured",
-                "The Collections Agent needs a language model. Set the AZURE_AI_* settings.",
-            )
-        with agent_lock:
-            if agent is None:
-                agent = CollectionsAgent(
-                    chat_model, kb.generator.model, kb, portfolio, kb.generator
+    def _assistant(admin_tools: bool) -> AssistantAgent:
+        with assistants_lock:
+            if admin_tools not in assistants:
+                assistants[admin_tools] = AssistantAgent(
+                    kb.generator.chat_model,
+                    kb.generator.model,
+                    kb,
+                    portfolio,
+                    kb.generator,
+                    customer_tools=admin_tools,
                 )
-            return agent
+            return assistants[admin_tools]
+
+    def _passages_only(message: str, conversation_id: str | None, warning: str | None) -> dict:
+        result = kb.answer(message, generate=False)
+        keys = ("answer", "answer_mode", "insufficient_evidence", "sources", "model")
+        return {
+            **{k: result[k] for k in keys},
+            "warning": warning,
+            "conversation_id": conversation_id or uuid.uuid4().hex,
+            "steps": [],
+        }
 
     @app.post(
-        "/api/admin/agent/chat",
-        response_model=schemas.AgentReply,
-        dependencies=[admin],
-        tags=["agent"],
+        "/api/assistant/chat",
+        response_model=schemas.AssistantReply,
+        tags=["assistant"],
         responses=ERROR_RESPONSES,
     )
-    def agent_chat(body: schemas.AgentRequest):
-        """Ask the Collections Agent. It looks things up with read-only tools (policies,
-        customers, the portfolio, the Decision Agent) and remembers the conversation."""
+    def assistant_chat(body: schemas.AssistantRequest, user: dict = signed_in):
+        """Ask the AI Assistant. It answers with read-only tools, cites the policy passages it
+        read, and remembers the conversation for the user who started it."""
         try:
-            return _agent().ask(body.message.strip(), body.conversation_id)
+            if getattr(kb.generator, "chat_model", None) is None:
+                return _passages_only(body.message, body.conversation_id, None)
+            try:
+                return _assistant(user["role"] == "admin").ask(
+                    body.message, owner=str(user["id"]), conversation_id=body.conversation_id
+                )
+            except EmbeddingError:
+                raise
+            except Exception as exc:
+                code, message, _ = classify_error(exc)
+                logger.warning("AI Assistant failed: %s", code)
+                warning = (
+                    f"The answer model is not available right now: {message} "
+                    "The matching policy passages are shown instead."
+                )
+                return _passages_only(body.message, body.conversation_id, warning)
         except EmbeddingError as exc:
             raise ApiError(503, "embeddings_unavailable", str(exc)) from exc
-        except ApiError:
-            raise
-        except Exception as exc:
-            code, message, retryable = classify_error(exc)
-            logger.warning("Collections Agent failed: %s", code)
-            raise ApiError(503 if retryable else 502, code, message) from exc
 
     return app
 

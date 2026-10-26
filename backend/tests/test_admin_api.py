@@ -29,7 +29,6 @@ ADMIN_ROUTES = [
     ("get", "/api/admin/predict/model"),
     ("post", "/api/admin/predict/dataset"),
     ("post", "/api/admin/rag/query"),
-    ("post", "/api/admin/agent/chat"),
 ]
 
 
