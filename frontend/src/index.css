@@ -1044,3 +1044,30 @@ input[aria-invalid='true'] { border-color: var(--error); box-shadow: 0 0 0 3px v
 .progress-steps .step-now { color: var(--text); font-weight: 600; }
 .progress-steps .step-now::before { content: '● '; color: var(--primary); }
 @media (prefers-reduced-motion: reduce) { .progress-fill { transition: none; } }
+
+/* AI Assistant pop-up: a button in the bottom-right corner that opens the chat. */
+.chat-widget { position: fixed; right: 24px; bottom: 24px; z-index: 40; display: flex; flex-direction: column; align-items: flex-end; gap: var(--s3); }
+.chat-widget[hidden] { display: none; }
+.chat-launcher {
+  display: inline-flex; align-items: center; gap: 8px; padding: 12px 18px; border: 1px solid var(--ink); border-radius: 999px;
+  background: var(--primary); color: var(--surface); font-weight: 600; cursor: pointer; box-shadow: 4px 4px 0 var(--rule-strong);
+  transition: background var(--fast), transform var(--fast);
+}
+.chat-launcher:hover { background: var(--primary-hover); }
+.chat-launcher:focus-visible { outline: 2px solid var(--signal); outline-offset: 3px; }
+.chat-panel {
+  display: flex; flex-direction: column; width: min(420px, calc(100vw - 32px)); height: min(640px, calc(100vh - 120px));
+  border: 1px solid var(--ink); border-radius: 10px; background: var(--bg); box-shadow: 6px 6px 0 var(--rule-strong); overflow: hidden;
+}
+.chat-panel[hidden] { display: none; }
+.chat-panel-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--rule-strong); background: var(--surface); }
+.chat-panel-body { flex: 1; overflow-y: auto; padding: var(--s3); }
+.playground-compact { gap: var(--s3); }
+.playground-toolbar { display: flex; justify-content: space-between; align-items: center; gap: var(--s2); }
+.playground-compact .chat { min-height: 200px; padding: 16px; }
+.playground-compact .bubble { padding-left: 40px; }
+.playground-compact .composer { bottom: 0; }
+@media (max-width: 640px) {
+  .chat-widget { right: 16px; bottom: 16px; }
+  .chat-panel { height: calc(100vh - 100px); }
+}

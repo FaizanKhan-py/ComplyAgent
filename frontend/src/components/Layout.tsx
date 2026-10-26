@@ -3,6 +3,7 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth'
 import { useActiveRect } from '../lib/motion'
 import { BrandMark } from './AuthShell'
+import { ChatWidget } from './ChatWidget'
 
 const NAV = [
   { to: '/', label: 'Risk Dashboard', icon: 'chart', end: true, adminOnly: true },
@@ -141,6 +142,8 @@ export function Layout() {
           <Outlet />
         </div>
       </main>
+      {/* The full-page chat is the same assistant, so the pop-up hides there. */}
+      <ChatWidget isAdmin={isAdmin} hidden={pathname === '/assistant'} />
     </div>
   )
 }

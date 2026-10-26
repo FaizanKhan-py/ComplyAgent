@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { api } from '../api/client'
 import type { AssistantReply } from '../api/types'
 import { AnswerContent } from '../components/AnswerContent'
@@ -77,9 +77,17 @@ const noHealth = () => Promise.resolve(null)
  * The AI Assistant: one chat for policy questions and, for administrators, customer questions.
  * A LangChain agent answers with read-only tools and cites the policy passages it read; the
  * server remembers the conversation. `showModelStatus` (administrators) also shows the model's
- * health and the customer examples.
+ * health and the customer examples. `compact` fits it into the pop-up chat panel: no page
+ * header, a small toolbar instead.
  */
-export function Playground({ showModelStatus = true }: { showModelStatus?: boolean }) {
+export function Playground({
+  showModelStatus = true,
+  compact = false,
+}: {
+  showModelStatus?: boolean
+  compact?: boolean
+}) {
+  const questionId = useId()
   const config = useResource(api.config)
   const health = useResource(showModelStatus ? api.health : noHealth, showModelStatus ? 15000 : undefined)
   const llm = health.data?.components.llm
@@ -140,22 +148,36 @@ export function Playground({ showModelStatus = true }: { showModelStatus?: boole
     }
   }
 
+  const startOver = (
+    <button
+      type="button"
+      className={compact ? 'btn btn-sm' : 'btn'}
+      onClick={newConversation}
+      disabled={turns.length === 0}
+    >
+      New conversation
+    </button>
+  )
+
   return (
-    <div className="playground">
-      <PageHeader
-        title="AI Assistant"
-        eyebrow="Policy desk"
-        description={
-          showModelStatus
-            ? 'Ask about the policies, customers and the portfolio. Answers cite the policies they use and show the tools the assistant used.'
-            : 'Ask policy questions. Answers come from the uploaded policies and show their sources.'
-        }
-        actions={
-          <button type="button" className="btn" onClick={newConversation} disabled={turns.length === 0}>
-            New conversation
-          </button>
-        }
-      />
+    <div className={compact ? 'playground playground-compact' : 'playground'}>
+      {compact ? (
+        <div className="playground-toolbar">
+          <span className="muted small">Answers cite the policies they use.</span>
+          {startOver}
+        </div>
+      ) : (
+        <PageHeader
+          title="AI Assistant"
+          eyebrow="Policy desk"
+          description={
+            showModelStatus
+              ? 'Ask about the policies, customers and the portfolio. Answers cite the policies they use and show the tools the assistant used.'
+              : 'Ask policy questions. Answers come from the uploaded policies and show their sources.'
+          }
+          actions={startOver}
+        />
+      )}
 
       {config.data && config.data.llm_model === null ? (
         <Notice tone="info">
@@ -209,11 +231,11 @@ export function Playground({ showModelStatus = true }: { showModelStatus?: boole
       </section>
 
       <form className="card composer" onSubmit={onSubmit}>
-        <label className="visually-hidden" htmlFor="question">
+        <label className="visually-hidden" htmlFor={questionId}>
           Question
         </label>
         <textarea
-          id="question"
+          id={questionId}
           rows={2}
           maxLength={2000}
           placeholder="Ask a question…  (Enter to send, Shift+Enter for a new line)"
