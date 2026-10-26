@@ -127,7 +127,11 @@ def classify_error(exc: Exception) -> tuple[str, str, bool]:
     if type(exc).__name__ in ("ContentFilterFinishReasonError", "OpenAIRefusalError"):
         return "llm_refused", "The model or its content filter declined this request.", False
     status = getattr(exc, "status_code", None)
-    if status == 400 and "content_filter" in str(exc):
+    # openai 3.x keeps the error code on the exception, not in its message; older versions
+    # put it only in the message.
+    if status == 400 and (
+        getattr(exc, "code", None) == "content_filter" or "content_filter" in str(exc)
+    ):
         return "llm_refused", "The provider's content filter blocked this request.", False
     if isinstance(status, int):
         retryable = status >= 500

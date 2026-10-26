@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { CustomerMessage, DecisionAction } from '../api/types'
 import { sendEmail } from '../lib/email'
 import { errorMessage, formatDateTime } from '../lib/format'
@@ -11,6 +11,56 @@ const ACTION_LABEL: Record<DecisionAction, string> = {
   schedule_call: 'Call the customer',
   escalate_to_human: 'Escalate to a collections officer',
   no_contact: 'No contact',
+}
+
+/**
+ * The steps of writing an email, with when each usually starts (ms). The backend answers in one
+ * request and sends no progress, so the bar is an estimate from measured runs (4 to 8 seconds).
+ */
+const STEPS = [
+  { label: 'Choosing the action', from: 0 },
+  { label: 'Reading the messaging policy', from: 1500 },
+  { label: 'Writing the email', from: 3000 },
+  { label: 'Checking it against the rules', from: 5500 },
+]
+
+/** Fills fast, then slower, and stops short of the end: only the answer finishes it. */
+function estimate(elapsed: number): number {
+  return Math.round(95 * (1 - Math.exp(-elapsed / 3000)))
+}
+
+export function MessageProgress() {
+  const [elapsed, setElapsed] = useState(0)
+  useEffect(() => {
+    const started = Date.now()
+    const timer = window.setInterval(() => setElapsed(Date.now() - started), 200)
+    return () => window.clearInterval(timer)
+  }, [])
+  const percent = estimate(elapsed)
+  const current = STEPS.findLastIndex((step) => elapsed >= step.from)
+  return (
+    <div className="progress-block">
+      <div
+        className="progress"
+        role="progressbar"
+        aria-label="Writing the email"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+        aria-valuetext={`${STEPS[current].label}, about ${percent}%`}
+      >
+        <div className="progress-fill" style={{ width: `${percent}%` }} />
+      </div>
+      <ol className="progress-steps">
+        {STEPS.map((step, i) => (
+          <li key={step.label} className={i < current ? 'step-done' : i === current ? 'step-now' : undefined}>
+            {step.label}
+          </li>
+        ))}
+      </ol>
+      <p className="muted small">This usually takes 4 to 8 seconds.</p>
+    </div>
+  )
 }
 
 export type MessageState =
@@ -42,10 +92,7 @@ export function MessageDraft({
     return (
       <section className="card" aria-label="Message draft">
         <h2>Message draft</h2>
-        <p className="muted" role="status">
-          <span className="spinner spinner-sm" aria-hidden="true" /> Choosing the action, reading the messaging policy
-          and writing the email. This takes a few seconds.
-        </p>
+        <MessageProgress />
       </section>
     )
   }

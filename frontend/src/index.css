@@ -1032,3 +1032,15 @@ input[aria-invalid='true'] { border-color: var(--error); box-shadow: 0 0 0 3px v
 .message-sources blockquote p { margin: 4px 0 0; white-space: pre-wrap; font-size: 0.9rem; }
 .message-tags { display: flex; gap: var(--s2); flex-wrap: wrap; }
 .message-preview { white-space: pre-wrap; max-height: 12rem; overflow-y: auto; padding: var(--s2) var(--s3); border: 1px solid var(--rule); border-radius: 4px; font-size: 0.9rem; }
+
+/* Message draft: progress while the email is written. */
+.progress-block { display: flex; flex-direction: column; gap: var(--s3); }
+.progress-block p { margin: 0; }
+.progress { height: 8px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.progress-fill { height: 100%; border-radius: inherit; background: var(--primary); transition: width 0.4s var(--ease); }
+.progress-steps { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s4); margin: 0; padding: 0; list-style: none; font-size: 0.9rem; color: var(--muted); }
+.progress-steps li::before { content: '○ '; }
+.progress-steps .step-done::before { content: '✓ '; color: var(--primary); }
+.progress-steps .step-now { color: var(--text); font-weight: 600; }
+.progress-steps .step-now::before { content: '● '; color: var(--primary); }
+@media (prefers-reduced-motion: reduce) { .progress-fill { transition: none; } }
