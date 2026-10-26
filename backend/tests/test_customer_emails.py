@@ -8,8 +8,8 @@ import sqlite3
 import pytest
 
 from app import manage
-from app.db import Database
-from app.portfolio import ImportFailed, Portfolio
+from app.core.db import Database
+from app.customers.portfolio import ImportFailed, Portfolio
 
 from .test_guidance import load
 from .test_portfolio_api import ROWS, entry, write_csv

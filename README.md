@@ -28,9 +28,9 @@ dataset (30,000 customers, six months of payment history each), with made-up ema
       │ trains XGBoost, saves
       ▼
  backend/models/risk_model/  (model.json, metadata.json, data_split.csv)
-      │ loaded by model_files.py
+      │ loaded by app/risk/model_files.py
       ▼
- Browser ── React UI (frontend/) ──► FastAPI (backend/app/main.py) ──► SQLite (db.py)
+ Browser ── React UI (frontend/) ──► FastAPI (backend/app/main.py) ──► SQLite (app/core/db.py)
                                          │
                                          ▼
                  backend/app/langchain/  (models · prompts · chains · memory · indexes · agents)
@@ -49,39 +49,49 @@ One file per LangChain component. Each one is used by the app, not kept as an ex
 | `prompts.py` | Prompts | Every system prompt, and the `ChatPromptTemplate`s (with a `MessagesPlaceholder` for memory) | chains, agent |
 | `chains.py` | Chains | LCEL pipelines: `prompt \| model.with_structured_output(schema)` | policy assistant, Decision Agent, email writer |
 | `memory.py` | Memory | Window memory (`trim_messages`) for the assistant; LangGraph `InMemorySaver` for the agent's conversations | `llm.py`, agent |
+| `llm.py` | (assembly) | `LangChainGenerator`, built from models + prompts + chains + memory | RAG answers, Decision Agent, email writer |
 | `indexes.py` | Indexes | `PolicyRetriever`, a `BaseRetriever` over the embedded policy chunks, returning `Document`s | agent's `search_policies` tool |
 | `agents.py` | Agents | The Collections Agent: `create_agent` with six `@tool`s | `POST /api/admin/agent/chat` |
 
-`backend/app/llm.py` is the single entry point the rest of the backend calls
-(`LangChainGenerator`); it is assembled from `models`, `prompts`, `chains` and `memory`.
+`langchain/llm.py` is the single entry point the rest of the backend calls
+(`LangChainGenerator`).
 
 ## Every file, in one line
 
-**backend/app/**
+**backend/app/**, one folder per part of the system:
 
-| File | What it is |
-|---|---|
-| `main.py` | The HTTP API: every route, sign-in and admin checks, error format |
-| `config.py` | All settings, read from `backend/.env` (template: `.env.example`) |
-| `db.py` | SQLite: documents and chunks, users and sessions, customers, predictions |
-| `auth.py` | Password hashing (Argon2), session tokens, sign-in rate limits |
-| `llm.py` | `LangChainGenerator`: the language model as the backend uses it |
-| `langchain/` | The LangChain components (table above) |
-| `knowledge_base.py` | RAG: upload → extract → chunk → embed → store; search; answer with citations |
-| `extraction.py` | File checks and text extraction (PDF, Word, text, Markdown) |
-| `chunking.py` | Splits text into overlapping chunks that keep their page numbers |
-| `embeddings.py` | Local embeddings (fastembed), or a hashing fallback |
-| `evaluation.py` | Scores the RAG system against `sample_policies/eval_questions.json` |
-| `guidance.py` | Turns a customer's facts into policy questions for the customer page |
-| `decision.py` | The Decision Agent: facts + policies → one checked recommendation |
-| `messages.py` | The email writer: decision + messaging policy → one checked draft |
-| `portfolio.py` | Customers: import the dataset, dashboard figures, list and record queries |
-| `model_files.py` | Loads the notebook's model files (`backend/models/risk_model/`) |
-| `risk_model.py` | Scores the customers in the database with that model |
-| `predictor.py` | Scores an uploaded CSV/Excel file with that model |
-| `tables.py` | Reads CSV, .xls and .xlsx tables |
-| `schemas.py` | The API's request and response shapes |
-| `manage.py` | Command line: accounts, data import, scoring, documents, evaluation |
+```
+app/
+  main.py              the HTTP API: every route, sign-in and admin checks, error format
+  manage.py            command line: accounts, data import, scoring, documents, evaluation
+  core/                what everything else builds on
+  rag/                 the policy knowledge base
+  langchain/           the LangChain components (table above)
+  decisions/           what to do for one customer
+  risk/                the default-risk model
+  customers/           the customer data
+```
+
+| Folder | File | What it is |
+|---|---|---|
+| `core/` | `config.py` | All settings, read from `backend/.env` (template: `.env.example`) |
+| | `db.py` | SQLite: documents and chunks, users and sessions, customers, predictions |
+| | `auth.py` | Password hashing (Argon2), session tokens, sign-in rate limits |
+| | `schemas.py` | The API's request and response shapes |
+| `rag/` | `knowledge_base.py` | RAG pipeline: upload → extract → chunk → embed → store; search; answer with citations |
+| | `extraction.py` | File checks and text extraction (PDF, Word, text, Markdown) |
+| | `chunking.py` | Splits text into overlapping chunks that keep their page numbers |
+| | `embeddings.py` | Local embeddings (fastembed), or a hashing fallback |
+| | `evaluation.py` | Scores the RAG system against `sample_policies/eval_questions.json` |
+| `langchain/` | see above | Models, prompts, chains, memory, indexes, agents, and `llm.py` |
+| `decisions/` | `decision.py` | The Decision Agent: facts + policies → one checked recommendation |
+| | `messages.py` | The email writer: decision + messaging policy → one checked draft |
+| | `guidance.py` | Turns a customer's facts into policy questions for the customer page |
+| `risk/` | `model_files.py` | Loads the notebook's model files (`backend/models/risk_model/`) |
+| | `risk_model.py` | Scores the customers in the database with that model |
+| | `predictor.py` | Scores an uploaded CSV/Excel file with that model |
+| `customers/` | `portfolio.py` | Import the dataset, dashboard figures, list and record queries |
+| | `tables.py` | Reads CSV, .xls and .xlsx tables |
 
 **frontend/src/**: `App.tsx` (routes), `api/` (client and types), `pages/` (one file per
 screen, e.g. `AgentChat.tsx` for the agent), `components/` (shared UI), `lib/` (formatting).

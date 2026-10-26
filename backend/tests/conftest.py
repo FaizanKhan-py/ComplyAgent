@@ -5,9 +5,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app.config import Settings
-from app.embeddings import HashingEmbedder
+from app.core.config import Settings
 from app.main import create_app
+from app.rag.embeddings import HashingEmbedder
 
 from .helpers import FakeGenerator
 

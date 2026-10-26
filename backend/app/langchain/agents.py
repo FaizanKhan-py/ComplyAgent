@@ -33,8 +33,8 @@ MAX_LISTED = 25  # customers per list_overdue_customers call
 
 def build_tools(kb: Any, portfolio: Any, generator: Any) -> list:
     """The agent's tools, bound to this app's knowledge base, portfolio and Decision Agent."""
-    from ..decision import DecisionUnavailable, case_facts, recommend
-    from ..guidance import describe
+    from ..decisions.decision import DecisionUnavailable, case_facts, recommend
+    from ..decisions.guidance import describe
 
     retriever = PolicyRetriever(knowledge_base=kb, k=4)
 

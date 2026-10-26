@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .knowledge_base import KnowledgeBase
 
-DEFAULT_QUESTIONS = Path(__file__).resolve().parents[2] / "sample_policies" / "eval_questions.json"
+DEFAULT_QUESTIONS = Path(__file__).resolve().parents[3] / "sample_policies" / "eval_questions.json"
 
 
 def load_questions(path: Path) -> list[dict]:

@@ -1,7 +1,7 @@
 import json
 
 from app import manage
-from app.portfolio import Portfolio
+from app.customers.portfolio import Portfolio
 
 from .conftest import SAMPLES
 from .test_portfolio_api import ROWS, write_csv
@@ -76,7 +76,7 @@ def test_add_documents_and_evaluate_rag_commands(client, tmp_path, capsys):
 
 
 def test_the_shipped_question_set_is_valid():
-    from app.evaluation import DEFAULT_QUESTIONS, load_questions
+    from app.rag.evaluation import DEFAULT_QUESTIONS, load_questions
 
     items = load_questions(DEFAULT_QUESTIONS)
     documents = {p.name for p in SAMPLES.glob("*_policy.*")}

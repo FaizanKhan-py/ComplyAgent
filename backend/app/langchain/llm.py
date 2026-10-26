@@ -22,9 +22,9 @@ from typing import Protocol, TypeVar
 import httpx
 from pydantic import BaseModel
 
-from .config import Settings
-from .langchain import chains, memory
-from .langchain.models import PROVIDER_NAMES, build_chat_model, classify_error
+from ..core.config import Settings
+from . import chains, memory
+from .models import PROVIDER_NAMES, build_chat_model, classify_error
 
 logger = logging.getLogger("complyagent.llm")
 

@@ -15,12 +15,12 @@ import re
 
 from pydantic import BaseModel, Field
 
+from ..customers.portfolio import Portfolio
+from ..langchain.llm import AnswerGenerator
+from ..langchain.prompts import MESSAGE_PROMPT
+from ..rag.knowledge_base import KnowledgeBase
 from .decision import Action, DecisionUnavailable, case_facts, recommend
 from .guidance import describe
-from .knowledge_base import KnowledgeBase
-from .langchain.prompts import MESSAGE_PROMPT
-from .llm import AnswerGenerator
-from .portfolio import Portfolio
 
 ORGANISATION = "ComplyAgent Finance"
 # Fictional demo values: the dataset has no names, phone numbers or payment pages.

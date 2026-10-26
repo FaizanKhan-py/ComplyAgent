@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.messages import MESSAGE_PROMPT, MessageDraft, problems
+from app.decisions.messages import MESSAGE_PROMPT, MessageDraft, problems
 
 from .test_guidance import load
 from .test_portfolio_api import ROWS, row
@@ -212,7 +212,7 @@ def test_the_guardrails():
 
 
 def test_the_risk_rule_and_its_deadline_are_read_from_the_policy():
-    from app.messages import risk_rule
+    from app.decisions.messages import risk_rule
 
     passages = [
         {"number": 1, "text": "Contact hours are 8 to 9."},

@@ -11,7 +11,7 @@ from typing import Protocol
 
 import numpy as np
 
-from .config import Settings
+from ..core.config import Settings
 
 logger = logging.getLogger("complyagent.embeddings")
 

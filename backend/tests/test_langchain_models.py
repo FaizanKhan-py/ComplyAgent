@@ -9,11 +9,11 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app.config import Settings
-from app.decision import Recommendation
-from app.embeddings import HashingEmbedder
-from app.llm import LangChainGenerator, LLMError, SourcePassage, build_generator
+from app.core.config import Settings
+from app.decisions.decision import Recommendation
+from app.langchain.llm import LangChainGenerator, LLMError, SourcePassage, build_generator
 from app.main import create_app
+from app.rag.embeddings import HashingEmbedder
 
 from .conftest import AUTH, TOKEN
 

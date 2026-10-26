@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import textwrap
 
-from app.llm import GeneratedAnswer, LLMError
+from app.langchain.llm import GeneratedAnswer, LLMError
 
 
 def make_pdf(pages: list[str]) -> bytes:
@@ -81,12 +81,12 @@ class BrokenEmbedder:
     default_min_score = 0.1
 
     def embed_documents(self, texts):
-        from app.embeddings import EmbeddingError
+        from app.rag.embeddings import EmbeddingError
 
         raise EmbeddingError("Embedding provider is down.")
 
     def embed_query(self, text):
-        from app.embeddings import EmbeddingError
+        from app.rag.embeddings import EmbeddingError
 
         raise EmbeddingError("Embedding provider is down.")
 

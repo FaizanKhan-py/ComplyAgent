@@ -13,11 +13,11 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+from ..customers.portfolio import Portfolio
+from ..langchain.llm import AnswerGenerator
+from ..langchain.prompts import DECISION_PROMPT
+from ..rag.knowledge_base import KnowledgeBase
 from .guidance import describe, questions
-from .knowledge_base import KnowledgeBase
-from .langchain.prompts import DECISION_PROMPT
-from .llm import AnswerGenerator
-from .portfolio import Portfolio
 
 PASSAGES_PER_QUESTION = 3
 

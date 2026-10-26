@@ -1,7 +1,7 @@
 import pytest
 
-from app.chunking import chunk_pages, split_text
-from app.extraction import (
+from app.rag.chunking import chunk_pages, split_text
+from app.rag.extraction import (
     ExtractionError,
     Page,
     ValidationError,

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from app.decision import DECISION_PROMPT, Recommendation, case_facts
-from app.llm import LLMError
-from app.portfolio import Portfolio
+from app.customers.portfolio import Portfolio
+from app.decisions.decision import DECISION_PROMPT, Recommendation, case_facts
+from app.langchain.llm import LLMError
 
 from .test_guidance import load
 from .test_portfolio_api import ROWS, row
@@ -153,9 +153,9 @@ def test_failures_are_clear(client, indexed, generator, tmp_path, setup, status,
 def test_without_a_model_no_decision_is_made(tmp_path):
     from fastapi.testclient import TestClient
 
-    from app.config import Settings
-    from app.embeddings import HashingEmbedder
+    from app.core.config import Settings
     from app.main import create_app
+    from app.rag.embeddings import HashingEmbedder
 
     from .conftest import AUTH, TOKEN, upload
     from .test_portfolio_api import write_csv

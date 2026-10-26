@@ -6,8 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from .decision import Recommendation
-from .portfolio import clean_email
+from ..customers.portfolio import clean_email
+from ..decisions.decision import Recommendation
 
 DocumentStatus = Literal["pending", "processing", "indexed", "failed"]
 ComponentStatus = Literal["ok", "degraded", "error"]

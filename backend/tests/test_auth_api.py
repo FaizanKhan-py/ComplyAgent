@@ -9,11 +9,12 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from app import auth, manage
-from app.config import Settings
-from app.db import Database
-from app.embeddings import HashingEmbedder
+from app import manage
+from app.core import auth
+from app.core.config import Settings
+from app.core.db import Database
 from app.main import create_app
+from app.rag.embeddings import HashingEmbedder
 
 from .helpers import FakeGenerator
 from .test_admin_api import ADMIN_ROUTES

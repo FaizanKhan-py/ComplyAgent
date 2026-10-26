@@ -17,7 +17,7 @@ from pathlib import Path
 import httpx
 from email_validator import EmailNotValidError, validate_email
 
-from .db import Database, now_iso
+from ..core.db import Database, now_iso
 from .tables import TableError, read_table
 
 DATA_URL = "https://archive.ics.uci.edu/static/public/350/data.csv"

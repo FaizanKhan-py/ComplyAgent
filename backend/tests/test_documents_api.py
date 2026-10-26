@@ -2,8 +2,8 @@ import sqlite3
 
 from fastapi.testclient import TestClient
 
-from app.embeddings import HashingEmbedder
 from app.main import create_app
+from app.rag.embeddings import HashingEmbedder
 
 from .conftest import AUTH, SAMPLES, upload
 from .helpers import BrokenEmbedder, make_pdf

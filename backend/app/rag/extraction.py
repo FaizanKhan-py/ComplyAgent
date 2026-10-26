@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from xml.etree import ElementTree
 
-from .config import SUPPORTED_EXTENSIONS
+from ..core.config import SUPPORTED_EXTENSIONS
 
 _WORD = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 _DOCX_BODY = "word/document.xml"

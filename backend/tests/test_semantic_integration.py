@@ -6,9 +6,9 @@ pytest -m integration
 import pytest
 from fastapi.testclient import TestClient
 
-from app.config import BACKEND_DIR, Settings
-from app.embeddings import FastEmbedEmbedder
+from app.core.config import BACKEND_DIR, Settings
 from app.main import create_app
+from app.rag.embeddings import FastEmbedEmbedder
 
 from .conftest import AUTH, SAMPLES, TOKEN, upload
 

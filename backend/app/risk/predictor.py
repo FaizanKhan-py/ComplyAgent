@@ -18,9 +18,9 @@ from pathlib import Path
 
 import numpy as np
 
+from ..customers.portfolio import _ALIASES, _PAY, COLUMNS, TARGET, risk_level
+from ..customers.tables import TableError, read_table
 from .model_files import ModelFiles, ModelMissing
-from .portfolio import _ALIASES, _PAY, COLUMNS, TARGET, risk_level
-from .tables import TableError, read_table
 
 PROBABILITY_COLUMN = "default_probability"
 RISK_COLUMN = "risk_level"

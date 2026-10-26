@@ -51,7 +51,7 @@ def call(name: str, args: dict, call_id: str = "1") -> AIMessage:
 
 
 def test_every_prompt_lives_in_one_module_and_keeps_its_placeholders():
-    from app import decision, messages
+    from app.decisions import decision, messages
 
     assert decision.DECISION_PROMPT is prompts.DECISION_PROMPT
     assert messages.MESSAGE_PROMPT is prompts.MESSAGE_PROMPT
@@ -188,8 +188,8 @@ def test_the_agent_can_ask_the_decision_agent(client, indexed, generator, tmp_pa
 def test_the_agent_needs_a_model_and_an_administrator(client, settings):
     from fastapi.testclient import TestClient
 
-    from app.embeddings import HashingEmbedder
     from app.main import create_app
+    from app.rag.embeddings import HashingEmbedder
 
     without = create_app(settings, embedder=HashingEmbedder(), generator=None)
     with TestClient(without, headers=client.headers) as c:

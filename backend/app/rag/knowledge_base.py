@@ -9,9 +9,10 @@ from pathlib import Path
 
 import numpy as np
 
+from ..core.config import SUPPORTED_EXTENSIONS, Settings
+from ..core.db import Database, now_iso
+from ..langchain.llm import AnswerGenerator, LLMError, SourcePassage
 from .chunking import chunk_pages
-from .config import SUPPORTED_EXTENSIONS, Settings
-from .db import Database, now_iso
 from .embeddings import Embedder, EmbeddingError
 from .extraction import (
     ExtractionError,
@@ -21,7 +22,6 @@ from .extraction import (
     safe_filename,
     validate_content,
 )
-from .llm import AnswerGenerator, LLMError, SourcePassage
 
 logger = logging.getLogger("complyagent.kb")
 

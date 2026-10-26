@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import manage
-from app.portfolio import ImportFailed, Portfolio
+from app.customers.portfolio import ImportFailed, Portfolio
 
 from .helpers import NOTEBOOK_FEATURES, save_model_files
 

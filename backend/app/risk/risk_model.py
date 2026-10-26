@@ -16,9 +16,9 @@ from pathlib import Path
 
 import numpy as np
 
-from .db import Database
+from ..core.db import Database
+from ..customers.portfolio import FEATURES_SQL
 from .model_files import ModelFiles, ModelMissing
-from .portfolio import FEATURES_SQL
 
 logger = logging.getLogger(__name__)
 

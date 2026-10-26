@@ -18,7 +18,7 @@ from dataclasses import dataclass
 import httpx
 from langchain_core.language_models import BaseChatModel
 
-from ..config import Settings
+from ..core.config import Settings
 
 logger = logging.getLogger("complyagent.llm")
 

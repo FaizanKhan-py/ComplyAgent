@@ -7,8 +7,8 @@ policy rule itself, so changing a policy document changes the guidance.
 
 from __future__ import annotations
 
-from .knowledge_base import KnowledgeBase
-from .portfolio import Portfolio
+from ..customers.portfolio import Portfolio
+from ..rag.knowledge_base import KnowledgeBase
 
 CONTACT_QUESTION = (
     "What rules apply when contacting a customer about an overdue balance: permitted hours, "

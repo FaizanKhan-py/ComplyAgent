@@ -29,22 +29,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import auth, schemas
-from .config import BACKEND_DIR, SUPPORTED_EXTENSIONS, Settings
-from .db import Database, EmailTaken
-from .decision import DecisionUnavailable, recommend
-from .embeddings import Embedder, EmbeddingError, build_embedder
-from .extraction import ValidationError
-from .guidance import customer_guidance
-from .knowledge_base import Busy, DuplicateDocument, KnowledgeBase, NotFound
+from .core import auth, schemas
+from .core.config import BACKEND_DIR, SUPPORTED_EXTENSIONS, Settings
+from .core.db import Database, EmailTaken
+from .customers.portfolio import SORT_COLUMNS, CustomerExists, Portfolio
+from .decisions.decision import DecisionUnavailable, recommend
+from .decisions.guidance import customer_guidance
+from .decisions.messages import generate_message
 from .langchain.agents import CollectionsAgent
+from .langchain.llm import AnswerGenerator, LLMError, build_generator
 from .langchain.models import classify_error
-from .llm import AnswerGenerator, LLMError, build_generator
-from .messages import generate_message
-from .portfolio import SORT_COLUMNS, CustomerExists, Portfolio
-from .predictor import SUPPORTED_EXTENSIONS as DATASET_EXTENSIONS
-from .predictor import PredictionFailed, Predictor
-from .risk_model import score_customer
+from .rag.embeddings import Embedder, EmbeddingError, build_embedder
+from .rag.extraction import ValidationError
+from .rag.knowledge_base import Busy, DuplicateDocument, KnowledgeBase, NotFound
+from .risk.predictor import SUPPORTED_EXTENSIONS as DATASET_EXTENSIONS
+from .risk.predictor import PredictionFailed, Predictor
+from .risk.risk_model import score_customer
 
 logger = logging.getLogger("complyagent.api")
 

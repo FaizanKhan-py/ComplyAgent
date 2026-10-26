@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-BACKEND_DIR = Path(__file__).resolve().parent.parent
+BACKEND_DIR = Path(__file__).resolve().parents[2]  # app/core/config.py -> backend/
 
 # Extension -> file type label. Only formats the extraction module can actually read.
 SUPPORTED_EXTENSIONS: dict[str, str] = {

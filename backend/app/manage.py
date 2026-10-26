@@ -26,14 +26,16 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from . import auth, evaluation, risk_model
-from .config import BACKEND_DIR, Settings
-from .db import Database, EmailTaken
-from .embeddings import build_embedder
-from .extraction import ValidationError
-from .knowledge_base import DuplicateDocument, KnowledgeBase
-from .llm import build_generator
-from .portfolio import DATA_URL, ImportFailed, Portfolio
+from .core import auth
+from .core.config import BACKEND_DIR, Settings
+from .core.db import Database, EmailTaken
+from .customers.portfolio import DATA_URL, ImportFailed, Portfolio
+from .langchain.llm import build_generator
+from .rag import evaluation
+from .rag.embeddings import build_embedder
+from .rag.extraction import ValidationError
+from .rag.knowledge_base import DuplicateDocument, KnowledgeBase
+from .risk import risk_model
 
 
 def _read_password() -> str:
