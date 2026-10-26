@@ -1,6 +1,8 @@
 import type {
   ActivityEvent,
   AdminConfig,
+  AgentReply,
+  AgentRequest,
   AuthStatus,
   CustomerCreate,
   CustomerCreated,
@@ -185,4 +187,8 @@ export const api = {
 
   query: (body: QueryRequest, signal?: AbortSignal) =>
     request<QueryResponse>('/api/admin/rag/query', { method: 'POST', json: body, signal }),
+
+  /** Ask the Collections Agent (administrators). The server keeps the conversation. */
+  agentChat: (body: AgentRequest, signal?: AbortSignal) =>
+    request<AgentReply>('/api/admin/agent/chat', { method: 'POST', json: body, signal }),
 }

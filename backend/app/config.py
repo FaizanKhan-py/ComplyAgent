@@ -33,11 +33,6 @@ def _bool(name: str, default: bool | None) -> bool | None:
     raise ValueError(f"{name} must be true or false")
 
 
-def _opt_int(name: str) -> int | None:
-    raw = os.getenv(name, "").strip()
-    return int(raw) if raw else None
-
-
 def _opt_float(name: str) -> float | None:
     raw = os.getenv(name, "").strip()
     return float(raw) if raw else None
@@ -51,6 +46,8 @@ class Settings:
         default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
     )
     storage_dir: Path = BACKEND_DIR / "storage"
+    # The model files the notebook saves (model.json, metadata.json, data_split.csv).
+    risk_model_dir: Path = BACKEND_DIR / "models" / "risk_model"
     max_upload_mb: int = 20
     chunk_size: int = 500
     chunk_overlap: int = 80
@@ -60,11 +57,9 @@ class Settings:
     rag_min_score: float | None = None
     llm_provider: str = "auto"
     anthropic_model: str = "claude-opus-5-5"
-    ollama_base_url: str = "http://127.0.0.1:11434"
-    ollama_model: str = "llama3.2"
-    ollama_num_ctx: int | None = None  # None: Ollama's own default context window
     azure_endpoint: str = ""
     azure_deployment: str = ""
+    azure_api_version: str = "2024-10-21"
     llm_timeout_seconds: float = 60.0
     allow_registration: bool = True
     admin_emails: frozenset[str] = frozenset()  # sign-ups from these addresses become admins
@@ -79,10 +74,8 @@ class Settings:
             raise ValueError("CHUNK_SIZE must be at least 100 characters")
         if not 0 <= self.chunk_overlap < self.chunk_size // 2:
             raise ValueError("CHUNK_OVERLAP must be >= 0 and less than half of CHUNK_SIZE")
-        if not self.ollama_base_url.startswith(("http://", "https://")):
-            raise ValueError("OLLAMA_BASE_URL must start with http:// or https://")
-        if self.ollama_num_ctx is not None and self.ollama_num_ctx < 1024:
-            raise ValueError("OLLAMA_NUM_CTX must be at least 1024 tokens")
+        if self.azure_endpoint and not self.azure_endpoint.startswith("https://"):
+            raise ValueError("AZURE_AI_ENDPOINT must start with https://")
         if self.admin_api_token and len(self.admin_api_token) < 16:
             raise ValueError("ADMIN_API_TOKEN must be at least 16 characters, or empty")
         if self.session_ttl_hours < 1:
@@ -118,6 +111,7 @@ class Settings:
 
     @property
     def models_dir(self) -> Path:
+        """The embedding model's download cache."""
         return self.storage_dir / "models"
 
     @classmethod
@@ -130,6 +124,9 @@ class Settings:
             kwargs["cors_origins"] = origins
         if storage:
             kwargs["storage_dir"] = Path(storage).expanduser().resolve()
+        risk_model = os.getenv("RISK_MODEL_DIR", "").strip()
+        if risk_model:
+            kwargs["risk_model_dir"] = Path(risk_model).expanduser().resolve()
         return cls(
             app_env=os.getenv("APP_ENV", "development").strip() or "development",
             admin_api_token=os.getenv("ADMIN_API_TOKEN", "").strip(),
@@ -142,11 +139,9 @@ class Settings:
             rag_min_score=_opt_float("RAG_MIN_SCORE"),
             llm_provider=os.getenv("LLM_PROVIDER", "auto").strip().lower(),
             anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-opus-5-5").strip(),
-            ollama_base_url=(os.getenv("OLLAMA_BASE_URL", "").strip() or "http://127.0.0.1:11434"),
-            ollama_model=os.getenv("OLLAMA_MODEL", "").strip() or "llama3.2",
-            ollama_num_ctx=_opt_int("OLLAMA_NUM_CTX"),
             azure_endpoint=os.getenv("AZURE_AI_ENDPOINT", "").strip(),
             azure_deployment=os.getenv("AZURE_AI_DEPLOYMENT", "").strip(),
+            azure_api_version=os.getenv("AZURE_AI_API_VERSION", "").strip() or "2024-10-21",
             llm_timeout_seconds=float(_int("LLM_TIMEOUT_SECONDS", 60)),
             allow_registration=bool(_bool("ALLOW_REGISTRATION", True)),
             admin_emails=frozenset(admins),

@@ -2,7 +2,7 @@
 six months of payment history) and the default-risk predictions made for them.
 
     python -m app.manage import-customers     # download the data and store it
-    python -m app.manage train-model          # train the model and score every customer
+    python -m app.manage score-customers      # score everyone with the notebook's model
     python -m app.manage import-emails FILE   # add the EMAIL column of a copy to the customers
 
 The data and the model follow notebooks/Data_pipeline_and_Modeling.ipynb.
@@ -276,7 +276,7 @@ class Portfolio:
     # --- dashboard -------------------------------------------------------------------------
 
     def model(self) -> dict | None:
-        """The latest trained model and its scores, or None before `train-model` has run."""
+        """The model the customers were scored with, or None before `score-customers` ran."""
         with self.db.connect() as conn:
             row = conn.execute("SELECT * FROM model_runs ORDER BY run_id DESC LIMIT 1").fetchone()
         if not row:

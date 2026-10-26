@@ -8,7 +8,7 @@ Run from the backend directory with the virtualenv active:
     python -m app.manage list-users
     python -m app.manage import-customers [--csv path/to/data.csv|.xls|.xlsx] [--replace]
     python -m app.manage import-emails path/to/data_with_emails.xls
-    python -m app.manage train-model
+    python -m app.manage score-customers       # after running the notebook
     python -m app.manage add-documents ../sample_policies/*_policy.*
     python -m app.manage evaluate-rag
 
@@ -130,7 +130,9 @@ def main(
     )
     emails.add_argument("file", type=Path)
     data.add_argument("--replace", action="store_true", help="delete the loaded data first")
-    commands.add_parser("train-model", help="train the risk model and score every customer")
+    commands.add_parser(
+        "score-customers", help="score every customer with the model the notebook saved"
+    )
     docs = commands.add_parser("add-documents", help="upload and index policy documents")
     docs.add_argument("files", nargs="+", type=Path)
     check = commands.add_parser("evaluate-rag", help="ask the test questions and score the answers")
@@ -162,14 +164,17 @@ def main(
         if args.command == "import-customers":
             count = Portfolio(db).import_data(args.csv, replace=args.replace)
             print(f"Imported {count} customers from {args.csv or DATA_URL}.")
-            print("Next, score them with: python -m app.manage train-model")
+            print("Next, score them with: python -m app.manage score-customers")
             return 0
         if args.command in ("add-documents", "evaluate-rag"):
             return _knowledge_base_command(args, kb or _build_kb(settings, db))
-        if args.command == "train-model":
-            result = risk_model.train(db, models_dir or settings.models_dir)
+        if args.command == "score-customers":
+            result = risk_model.score_all(db, models_dir or settings.risk_model_dir)
             test = result["test"]
-            print(f"Trained {risk_model.MODEL_NAME} and scored {result['customers']} customers.")
+            print(
+                f"Scored {result['customers']} customers with {result['model_name']} "
+                f"(trained by the notebook on {result['trained_at'][:10]})."
+            )
             print(
                 f"Test customers: ROC-AUC {test['roc_auc']:.4f}, recall {test['recall']:.4f}, "
                 f"precision {test['precision']:.4f}, accuracy {test['accuracy']:.4f}"
@@ -200,7 +205,7 @@ def main(
             print(f"Password changed for {email}. Their open sessions were ended.")
     except auth.AuthError as exc:
         raise SystemExit(exc.message) from exc
-    except (ImportFailed, risk_model.TrainingFailed) as exc:
+    except (ImportFailed, risk_model.ScoringFailed) as exc:
         raise SystemExit(str(exc)) from exc
     except EmailTaken:
         raise SystemExit("That email address already has an account.") from None

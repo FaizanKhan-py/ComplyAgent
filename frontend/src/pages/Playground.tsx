@@ -149,8 +149,8 @@ export function Playground({ showModelStatus = true }: { showModelStatus?: boole
           summary.{' '}
           {showModelStatus ? (
             <>
-              Set <code>ANTHROPIC_API_KEY</code> or <code>LLM_PROVIDER=ollama</code> on the backend to enable
-              generated answers.
+              Set the <code>AZURE_AI_*</code> settings (or <code>ANTHROPIC_API_KEY</code>) on the backend to
+              enable generated answers.
             </>
           ) : (
             'An administrator can enable generated answers.'

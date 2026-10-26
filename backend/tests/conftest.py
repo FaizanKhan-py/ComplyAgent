@@ -18,7 +18,13 @@ AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
 @pytest.fixture
 def settings(tmp_path) -> Settings:
-    return Settings(storage_dir=tmp_path / "storage", admin_api_token=TOKEN, max_upload_mb=1)
+    # A model folder of its own, so tests never use the real notebook model in backend/models.
+    return Settings(
+        storage_dir=tmp_path / "storage",
+        risk_model_dir=tmp_path / "risk_model",
+        admin_api_token=TOKEN,
+        max_upload_mb=1,
+    )
 
 
 @pytest.fixture

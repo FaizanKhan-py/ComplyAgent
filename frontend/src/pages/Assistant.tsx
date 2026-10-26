@@ -3,6 +3,7 @@ import { useActiveRect } from '../lib/motion'
 
 const TABS = [
   { to: '/assistant', label: 'Chat', end: true },
+  { to: '/assistant/agent', label: 'Agent', end: false },
   { to: '/assistant/documents', label: 'Documents', end: false },
 ]
 

@@ -343,7 +343,7 @@ class KnowledgeBase:
                 "status": "degraded",
                 "detail": (
                     "Not configured: answers are retrieval-only "
-                    "(set ANTHROPIC_API_KEY or LLM_PROVIDER=ollama)"
+                    "(set the AZURE_AI_* settings, or ANTHROPIC_API_KEY)"
                 ),
             }
         else:

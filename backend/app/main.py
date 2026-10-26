@@ -37,6 +37,8 @@ from .embeddings import Embedder, EmbeddingError, build_embedder
 from .extraction import ValidationError
 from .guidance import customer_guidance
 from .knowledge_base import Busy, DuplicateDocument, KnowledgeBase, NotFound
+from .langchain.agents import CollectionsAgent
+from .langchain.models import classify_error
 from .llm import AnswerGenerator, LLMError, build_generator
 from .messages import generate_message
 from .portfolio import SORT_COLUMNS, CustomerExists, Portfolio
@@ -78,7 +80,7 @@ def create_app(
         generator = build_generator(settings)
     kb = KnowledgeBase(settings, Database(settings.db_path), embedder, generator)
     portfolio = Portfolio(kb.db)
-    predictor = Predictor(settings.models_dir)
+    predictor = Predictor(settings.risk_model_dir)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -529,7 +531,7 @@ def create_app(
         payment: Literal["overdue", "current"] | None = Query(
             None, description="overdue: late in the latest month; current: not late"
         ),
-        sort: str = Query("id", enum=sorted(SORT_COLUMNS)),
+        sort: str = Query("id", json_schema_extra={"enum": sorted(SORT_COLUMNS)}),
         order: Literal["asc", "desc"] = "asc",
         page: int = Query(1, ge=1, le=100_000),
         page_size: int = Query(25, ge=1, le=100),
@@ -558,7 +560,7 @@ def create_app(
                 "customer_exists",
                 f"Customer {exc.customer_id} already exists. Use another number or leave it blank.",
             ) from exc
-        scored = score_customer(kb.db, settings.models_dir, customer_id)
+        scored = score_customer(kb.db, settings.risk_model_dir, customer_id)
         return {"customer": portfolio.get_customer(customer_id), "scored": scored}
 
     @app.get(
@@ -696,6 +698,49 @@ def create_app(
             )
         except EmbeddingError as exc:
             raise ApiError(503, "embeddings_unavailable", str(exc)) from exc
+
+    # --- admin: Collections Agent (LangChain agent with tools) -----------------------------
+
+    agent: CollectionsAgent | None = None
+    agent_lock = threading.Lock()
+
+    def _agent() -> CollectionsAgent:
+        """Built on first use, so the app starts without it when no model is configured."""
+        nonlocal agent
+        chat_model = getattr(kb.generator, "chat_model", None)
+        if chat_model is None:
+            raise ApiError(
+                503,
+                "llm_not_configured",
+                "The Collections Agent needs a language model. Set the AZURE_AI_* settings.",
+            )
+        with agent_lock:
+            if agent is None:
+                agent = CollectionsAgent(
+                    chat_model, kb.generator.model, kb, portfolio, kb.generator
+                )
+            return agent
+
+    @app.post(
+        "/api/admin/agent/chat",
+        response_model=schemas.AgentReply,
+        dependencies=[admin],
+        tags=["agent"],
+        responses=ERROR_RESPONSES,
+    )
+    def agent_chat(body: schemas.AgentRequest):
+        """Ask the Collections Agent. It looks things up with read-only tools (policies,
+        customers, the portfolio, the Decision Agent) and remembers the conversation."""
+        try:
+            return _agent().ask(body.message.strip(), body.conversation_id)
+        except EmbeddingError as exc:
+            raise ApiError(503, "embeddings_unavailable", str(exc)) from exc
+        except ApiError:
+            raise
+        except Exception as exc:
+            code, message, retryable = classify_error(exc)
+            logger.warning("Collections Agent failed: %s", code)
+            raise ApiError(503 if retryable else 502, code, message) from exc
 
     return app
 

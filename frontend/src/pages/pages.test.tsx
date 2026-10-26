@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { answer, config, customer, customerDetail, doc, health, mockApi, portfolio } from '../test/fixtures'
 import { CustomerRecord } from './CustomerRecord'
+import { AgentChat } from './AgentChat'
 import { Customers } from './Customers'
 import { Documents } from './Documents'
 import { Playground } from './Playground'
@@ -53,7 +54,7 @@ describe('Risk Dashboard', () => {
     mockApi({ 'GET /api/admin/portfolio/summary': () => ({ body: portfolio({ model: null, by_risk: [] }) }) })
     page(<RiskDashboard />)
     expect(await screen.findByText('No risk predictions yet')).toBeInTheDocument()
-    expect(screen.getByText('python -m app.manage train-model')).toBeInTheDocument()
+    expect(screen.getByText('python -m app.manage score-customers')).toBeInTheDocument()
     expect(screen.getByText('No model has been trained yet')).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Delinquency trend' })).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Prediction model' })).not.toBeInTheDocument()
@@ -615,9 +616,9 @@ describe('AI Assistant', () => {
   })
 
   it('warns when the configured answer model is down, using the live health detail', async () => {
-    const detail = 'Ollama is not reachable at http://127.0.0.1:11434. Is it running?'
+    const detail = 'gpt-4.1-mini (Azure OpenAI via LangChain): last request failed. Could not reach the model provider.'
     mockApi({
-      'GET /api/admin/config': () => ({ body: { ...config, llm_provider: 'ollama', llm_model: 'llama3.2' } }),
+      'GET /api/admin/config': () => ({ body: { ...config, llm_provider: 'azure', llm_model: 'gpt-4.1-mini' } }),
       'GET /api/admin/health': () => ({
         body: { ...health, components: { ...health.components, llm: { status: 'error', detail } } },
       }),
@@ -642,6 +643,56 @@ describe('AI Assistant', () => {
     expect(await screen.findByText('Embedding model could not be loaded.')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Retry' }))
     expect(await screen.findByText('Generated answer')).toBeInTheDocument()
+  })
+})
+
+describe('Collections Agent', () => {
+  const reply = (answer: string, steps: { tool: string; input: string }[] = []) => ({
+    answer,
+    conversation_id: 'c1',
+    steps,
+    model: 'gpt-4.1-mini',
+  })
+
+  it('shows the answer and the tools used, and continues the same conversation', async () => {
+    const user = userEvent.setup()
+    let turn = 0
+    const api = mockApi({
+      'POST /api/admin/agent/chat': () =>
+        ++turn === 1
+          ? { body: reply('Customer 4 is 3 months late.', [{ tool: 'customer_overview', input: '{"customer_id": 4}' }]) }
+          : { body: reply('Yes.') },
+    })
+    page(<AgentChat />)
+    await user.type(screen.getByLabelText('Message'), 'How is customer 4?{Enter}')
+    expect(await screen.findByText('Customer 4 is 3 months late.')).toBeInTheDocument()
+    expect(screen.getByText('Looked up the customer')).toBeInTheDocument()
+
+    await user.type(screen.getByLabelText('Message'), 'Late?{Enter}')
+    expect(await screen.findByText('Yes.')).toBeInTheDocument()
+    expect(screen.getByText('No tools needed')).toBeInTheDocument()
+    const sent = api.calls.filter((c) => c.key === 'POST /api/admin/agent/chat').map((c) => JSON.parse(String(c.init.body)))
+    expect(sent).toEqual([
+      { message: 'How is customer 4?', conversation_id: null },
+      { message: 'Late?', conversation_id: 'c1' },
+    ])
+
+    // A new conversation forgets the id, so the server starts a fresh memory.
+    await user.click(screen.getByRole('button', { name: 'New conversation' }))
+    expect(screen.getByText('Ask the Collections Agent')).toBeInTheDocument()
+  })
+
+  it('shows why the agent could not answer', async () => {
+    const user = userEvent.setup()
+    mockApi({
+      'POST /api/admin/agent/chat': () => ({
+        status: 503,
+        body: { error: { code: 'llm_not_configured', message: 'The Collections Agent needs a language model.' } },
+      }),
+    })
+    page(<AgentChat />)
+    await user.click(screen.getByRole('button', { name: 'Which high-risk customers are overdue right now?' }))
+    expect(await screen.findByText('The Collections Agent needs a language model.')).toBeInTheDocument()
   })
 })
 

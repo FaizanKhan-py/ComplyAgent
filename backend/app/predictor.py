@@ -1,5 +1,5 @@
 """Predicts the target column ("default payment next month") for an uploaded dataset, with the
-model that notebooks/Data_pipeline_and_Modeling.ipynb saves to storage/models.
+model that notebooks/Data_pipeline_and_Modeling.ipynb saves to backend/models/risk_model.
 
 The upload (CSV, .xls or .xlsx) has the UCI "Default of Credit Card Clients" columns (X1..X23 or
 LIMIT_BAL, SEX, ...).
@@ -7,37 +7,25 @@ Every row gets the notebook's engineered features, then the saved XGBoost model 
 result is the same rows as CSV with the target column filled in, plus the probability and
 risk level.
 
-Loading the model needs scikit-learn, xgboost and joblib (requirements.txt), ideally the same
-versions as the environment that ran the notebook.
+The model files are loaded by model_files.ModelFiles, which the customer scoring uses too.
 """
 
 from __future__ import annotations
 
 import csv
 import io
-import threading
 from pathlib import Path
 
 import numpy as np
 
+from .model_files import ModelFiles, ModelMissing
 from .portfolio import _ALIASES, _PAY, COLUMNS, TARGET, risk_level
 from .tables import TableError, read_table
 
-MODEL_FILE = "default_risk_model.joblib"
 PROBABILITY_COLUMN = "default_probability"
 RISK_COLUMN = "risk_level"
 ACTUAL_COLUMN = "actual default payment next month"
 _BILL = [f"BILL_AMT{m}" for m in range(1, 7)]
-# The model inputs _features() builds, named as in the notebook's training table.
-BUILT_FEATURES = {
-    "LIMIT_BAL",
-    "AGE",
-    "on_time_payment_rate",
-    "avg_payment_delay",
-    "avg_credit_utilization",
-    "EDUCATION_cleaned",
-    "sex_male",
-}
 
 
 class PredictionFailed(Exception):
@@ -73,57 +61,34 @@ SUPPORTED_EXTENSIONS = (".csv", ".xls", ".xlsx")
 
 class Predictor:
     def __init__(self, models_dir: Path) -> None:
-        self.path = models_dir / MODEL_FILE
-        self._lock = threading.Lock()
-        self._bundle: dict | None = None
-        self._loaded_mtime: float | None = None
+        self._files = ModelFiles(models_dir)
 
-    def _load(self) -> dict:
-        """The saved bundle, reloaded when the notebook writes a new file."""
+    def _load(self):
+        """The saved model, reloaded when the notebook writes new files."""
         try:
-            mtime = self.path.stat().st_mtime
-        except FileNotFoundError:
-            raise PredictionFailed(
-                "No trained model found. Run notebooks/Data_pipeline_and_Modeling.ipynb to the "
-                f"end; its last cell saves the model to storage/models/{MODEL_FILE}.",
-                503,
-            ) from None
-        with self._lock:
-            if self._bundle is None or self._loaded_mtime != mtime:
-                try:
-                    import joblib
-
-                    bundle = joblib.load(self.path)
-                except ImportError as exc:
-                    raise PredictionFailed(
-                        "Scoring needs scikit-learn, xgboost and joblib. Install them with: "
-                        "pip install -r requirements.txt",
-                        503,
-                    ) from exc
-                unknown = [f for f in bundle["features"] if f not in BUILT_FEATURES]
-                if unknown:
-                    raise PredictionFailed(
-                        f"The saved model uses features this server cannot build: {unknown}.", 503
-                    )
-                self._bundle, self._loaded_mtime = bundle, mtime
-            return self._bundle
+            return self._files.load()
+        except ModelMissing as exc:
+            raise PredictionFailed(str(exc), 503) from None
 
     def info(self) -> dict:
         try:
-            bundle = self._load()
+            model = self._load()
         except PredictionFailed as exc:
             return {"available": False, "message": str(exc)}
+        test = model.metadata["metrics"]["test"]
         return {
             "available": True,
             "message": None,
-            "model_name": bundle["model_name"],
-            "features": bundle["features"],
-            "threshold": bundle["threshold"],
-            "test_metrics": bundle.get("test_metrics"),
+            "model_name": model.metadata["model_name"],
+            "features": model.features,
+            "threshold": model.threshold,
+            "test_metrics": {
+                k: test[k] for k in ("accuracy", "precision", "recall", "f1", "roc_auc")
+            },
         }
 
     def predict_file(self, filename: str, data: bytes) -> dict:
-        bundle = self._load()
+        model = self._load()
         try:
             header, body = read_table(data)
         except TableError as exc:
@@ -152,14 +117,13 @@ class Predictor:
             raise PredictionFailed(f"Data row {line}: LIMIT_BAL must be greater than 0.")
 
         built = _features(values)
-        matrix = np.column_stack([built[f] for f in bundle["features"]])
-        probability = bundle["model"].predict_proba(matrix)[:, 1]
-        predicted = (probability >= bundle["threshold"]).astype(int)
+        probability = model.predict(np.column_stack([built[f] for f in model.features]))
+        predicted = (probability >= model.threshold).astype(int)
         actual = self._actual(body, position.get(TARGET))
         return {
             "filename": filename,
-            "model_name": bundle["model_name"],
-            "threshold": bundle["threshold"],
+            "model_name": model.metadata["model_name"],
+            "threshold": model.threshold,
             "rows": len(body),
             "predicted_defaults": int(predicted.sum()),
             "by_risk": {

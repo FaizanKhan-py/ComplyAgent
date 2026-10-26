@@ -360,3 +360,19 @@ export interface CustomerMessage {
   corrected: string[]
   model: string | null
 }
+
+// --- Collections Agent (LangChain agent) -----------------------------------------------------
+
+export interface AgentRequest {
+  message: string
+  /** Continue a conversation; null starts a new one. */
+  conversation_id: string | null
+}
+
+export interface AgentReply {
+  answer: string
+  conversation_id: string
+  /** The tools the agent called, in order, with their arguments as JSON. */
+  steps: { tool: string; input: string }[]
+  model: string
+}

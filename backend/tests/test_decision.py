@@ -144,7 +144,7 @@ def test_failures_are_clear(client, indexed, generator, tmp_path, setup, status,
         for doc in indexed.values():
             client.delete(f"/api/admin/documents/{doc['id']}")
     if setup == "llm_down":
-        generator.error = LLMError("llm_unreachable", "Could not reach Ollama.", True)
+        generator.error = LLMError("llm_unreachable", "Could not reach the model provider.", True)
     response = client.post(URL.format(customer))
     assert response.status_code == status, response.text
     assert response.json()["error"]["code"] == code

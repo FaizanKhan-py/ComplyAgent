@@ -422,3 +422,24 @@ class DatasetPrediction(BaseModel):
     scores: DatasetScores | None
     predictions: list[RowPrediction]
     csv: str
+
+
+class AgentRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+    conversation_id: str | None = Field(
+        default=None,
+        max_length=64,
+        description="Continue a conversation. Omit it to start a new one.",
+    )
+
+
+class AgentStep(BaseModel):
+    tool: str
+    input: str = Field(description="The tool's arguments, as JSON.")
+
+
+class AgentReply(BaseModel):
+    answer: str
+    conversation_id: str
+    steps: list[AgentStep] = Field(description="The tools the agent called, in order.")
+    model: str

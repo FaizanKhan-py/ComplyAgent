@@ -137,7 +137,7 @@ function Charts({ s }: { s: PortfolioSummary }) {
               Train the model and score every customer from the server, in the <code>backend</code>{' '}
               folder:
             </>
-            <code>python -m app.manage train-model</code>
+            <code>python -m app.manage score-customers</code>
           </EmptyState>
         </section>
       )}
