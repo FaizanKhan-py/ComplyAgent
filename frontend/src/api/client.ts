@@ -3,7 +3,10 @@ import type {
   AdminConfig,
   AssistantReply,
   AssistantRequest,
+  AuditList,
+  AuditQuery,
   AuthStatus,
+  Conversation,
   CustomerCreate,
   CustomerCreated,
   CustomerDetail,
@@ -13,6 +16,9 @@ import type {
   CustomerQuery,
   DatasetPrediction,
   DeleteResult,
+  FollowUp,
+  FollowUpRun,
+  Inbox,
   Health,
   KnowledgeBaseStats,
   PolicyDocument,
@@ -22,6 +28,8 @@ import type {
   QueryResponse,
   RegisterRequest,
   SessionInfo,
+  SimulateRequest,
+  Simulation,
   User,
 } from './types'
 
@@ -177,6 +185,48 @@ export const api = {
   /** A checked draft from the Decision Agent and the message writer. Nothing is sent. */
   generateMessage: (id: number, signal?: AbortSignal) =>
     request<CustomerMessage>(`/api/admin/customers/${id}/message`, { method: 'POST', signal }),
+
+  conversation: (customerId: number) =>
+    request<Conversation | null>(`/api/admin/customers/${customerId}/conversation`),
+  startConversation: (customerId: number, signal?: AbortSignal) =>
+    request<Conversation>(`/api/admin/customers/${customerId}/conversation`, { method: 'POST', signal }),
+  customerReplied: (id: number, body: { subject?: string; body: string }, signal?: AbortSignal) =>
+    request<Conversation>(`/api/admin/conversations/${id}/inbound`, { method: 'POST', json: body, signal }),
+  redraft: (id: number, feedback: string | null, signal?: AbortSignal) =>
+    request<Conversation>(`/api/admin/conversations/${id}/redraft`, { method: 'POST', json: { feedback }, signal }),
+  closeConversation: (id: number, note: string | null) =>
+    request<Conversation>(`/api/admin/conversations/${id}/close`, { method: 'POST', json: { note } }),
+  approveMessage: (id: number, body: { subject?: string; body?: string; note?: string }) =>
+    request<Conversation>(`/api/admin/messages/${id}/approve`, { method: 'POST', json: body }),
+  rejectMessage: (id: number, note: string) =>
+    request<Conversation>(`/api/admin/messages/${id}/reject`, { method: 'POST', json: { note } }),
+  sendMessage: (id: number) => request<Conversation>(`/api/admin/messages/${id}/send`, { method: 'POST' }),
+
+  inbox: () => request<Inbox>('/api/admin/inbox'),
+  doNotContact: (customerId: number, reason: string) =>
+    request<CustomerDetail>(`/api/admin/customers/${customerId}/do-not-contact`, { method: 'POST', json: { reason } }),
+  liftDoNotContact: (customerId: number, note: string) =>
+    request<CustomerDetail>(`/api/admin/customers/${customerId}/do-not-contact/lift`, {
+      method: 'POST',
+      json: { note },
+    }),
+
+  followUps: (status?: FollowUp['status']) =>
+    request<FollowUp[]>(`/api/admin/follow-ups${status ? `?status=${status}` : ''}`),
+  runDueFollowUps: () => request<FollowUpRun>('/api/admin/follow-ups/run-due', { method: 'POST' }),
+  runFollowUp: (id: number) => request<Conversation>(`/api/admin/follow-ups/${id}/run`, { method: 'POST' }),
+
+  audit: (query: AuditQuery = {}) => {
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(query)) if (value !== undefined && value !== '') params.set(key, String(value))
+    const qs = params.toString()
+    return request<AuditList>(`/api/admin/audit${qs ? `?${qs}` : ''}`)
+  },
+  agentGraph: () => request<{ mermaid: string }>('/api/admin/agents/graph'),
+
+  counterfactuals: (customerId: number) => request<Simulation>(`/api/admin/customers/${customerId}/counterfactuals`),
+  simulate: (customerId: number, body: SimulateRequest, signal?: AbortSignal) =>
+    request<Simulation>(`/api/admin/customers/${customerId}/counterfactuals`, { method: 'POST', json: body, signal }),
 
   predictionModel: () => request<PredictionModelInfo>('/api/admin/predict/model'),
   predictDataset: (file: File) => {

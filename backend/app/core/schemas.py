@@ -7,7 +7,9 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 from ..customers.portfolio import clean_email
+from ..decisions.case_analyst import CaseAnalysis
 from ..decisions.decision import Recommendation
+from ..decisions.red_team import RedTeamFinding
 
 DocumentStatus = Literal["pending", "processing", "indexed", "failed"]
 ComponentStatus = Literal["ok", "degraded", "error"]
@@ -284,11 +286,20 @@ class MonthlyRecord(BaseModel):
     pay_amt: int
 
 
+class DoNotContact(BaseModel):
+    reason: str
+    set_by: str = Field(description="An officer, or the Communication Agent.")
+    set_at: str
+
+
 class CustomerDetail(CustomerSummary):
     on_time_payment_rate: float | None
     avg_payment_delay: float | None
     avg_credit_utilization: float | None
     history: list[MonthlyRecord]
+    do_not_contact: DoNotContact | None = Field(
+        default=None, description="The customer asked not to be contacted: no email is written."
+    )
 
 
 class MonthInput(BaseModel):
@@ -454,3 +465,223 @@ class AssistantReply(BaseModel):
     warning: str | None
     conversation_id: str
     steps: list[AssistantStep] = Field(description="The tools the assistant called, in order.")
+
+
+# --- collections conversations: the agents, the email thread and the officer's approval ----
+
+
+class CaseFile(BaseModel):
+    analysed_by: Literal["rule", "model"]
+    model: str | None
+    facts: list[CaseFact]
+    analysis: CaseAnalysis
+
+
+class ReviewRound(BaseModel):
+    round: int
+    checked_by: Literal["guardrails", "red_team"]
+    passed: bool
+    issues: list[str] = Field(description="Guardrails the draft broke.")
+    findings: list[RedTeamFinding] = Field(description="What the Red Team found.")
+    dropped: int = Field(
+        description="Red Team findings dropped: they quoted words not in the email."
+    )
+    decision_revised: dict[str, str] | None = Field(
+        description="The action before and after the Red Team challenged it."
+    )
+
+
+class DraftReview(BaseModel):
+    rounds: list[ReviewRound]
+    checks: list[str] = Field(description="Guardrails the final draft passed.")
+    sources: list[PolicyPassage]
+    decision: Recommendation
+
+
+ConversationStatus = Literal["open", "escalated", "closed"]
+MessageStatus = Literal[
+    "pending_approval", "blocked", "approved", "rejected", "superseded", "sent", "received"
+]
+
+
+class ConversationMessage(BaseModel):
+    id: int
+    direction: Literal["outbound", "inbound"]
+    status: MessageStatus
+    subject: str | None
+    body: str
+    intent: str | None = Field(description="Inbound: what the customer's email is about.")
+    intent_summary: str | None
+    review: DraftReview | None = Field(description="Outbound: how the draft was checked.")
+    edited: bool = Field(description="An officer changed the agent's text before approving it.")
+    reviewed_by: str | None
+    reviewed_at: str | None
+    review_note: str | None
+    sent_by: str | None
+    sent_at: str | None
+    created_at: str
+
+
+class Conversation(BaseModel):
+    id: int
+    customer_id: int
+    status: ConversationStatus
+    status_reason: str | None
+    case_file: CaseFile
+    decision: Recommendation
+    created_by: str
+    created_at: str
+    updated_at: str
+    messages: list[ConversationMessage]
+    follow_ups: list[FollowUp] = Field(description="What the Follow-up Agent planned.")
+
+
+class InboundEmail(BaseModel):
+    subject: str | None = Field(default=None, max_length=300)
+    body: str = Field(min_length=1, max_length=5000)
+
+    @field_validator("body")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("body must not be blank")
+        return value.strip()
+
+
+class RedraftRequest(BaseModel):
+    feedback: str | None = Field(default=None, max_length=1000)
+
+
+class ApproveRequest(BaseModel):
+    subject: str | None = Field(default=None, max_length=300, description="Edited subject.")
+    body: str | None = Field(default=None, max_length=5000, description="Edited body.")
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class RejectRequest(BaseModel):
+    note: str = Field(min_length=1, max_length=1000, description="Why it was turned down.")
+
+
+class CloseRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class FollowUp(BaseModel):
+    id: int
+    conversation_id: int
+    customer_id: int
+    due_at: str
+    action: Literal["send_reminder", "schedule_call", "escalate_to_human"]
+    reason: str
+    status: Literal["scheduled", "done", "cancelled"]
+    outcome: str | None
+    created_at: str
+    done_at: str | None
+
+
+class FollowUpError(BaseModel):
+    id: int
+    error: str
+
+
+class FollowUpRun(BaseModel):
+    due: int
+    done: list[int]
+    failed: list[FollowUpError]
+
+
+class AuditEvent(BaseModel):
+    id: int
+    created_at: str
+    actor: str = Field(description="A person's email, or the agent's name.")
+    event: str
+    customer_id: int | None
+    conversation_id: int | None
+    message_id: int | None
+    summary: str
+    detail: dict | None
+
+
+class AuditList(BaseModel):
+    events: list[AuditEvent]
+    next_before: int | None = Field(description="Pass as `before` for the next, older page.")
+
+
+class AgentGraph(BaseModel):
+    mermaid: str
+
+
+class SimulatedOutcome(BaseModel):
+    probability: float
+    risk_level: RiskLevel
+    predicted_default: bool
+
+
+class Scenario(SimulatedOutcome):
+    key: str
+    label: str
+    kind: Literal["behaviour", "fairness"]
+    change: float = Field(description="Probability minus the record's own probability.")
+
+
+class CustomScenario(SimulatedOutcome):
+    change: float
+    changes: dict[str, int]
+    features: dict[str, float]
+    recommendation: Recommendation | None = Field(
+        default=None, description="The Decision Agent's choice for the changed record."
+    )
+    decision_error: str | None = None
+
+
+class Simulation(BaseModel):
+    customer_id: int
+    model_name: str | None
+    threshold: float
+    base: SimulatedOutcome
+    scenarios: list[Scenario]
+    custom: CustomScenario | None
+
+
+class SimulateRequest(BaseModel):
+    repayment_status: int | None = Field(default=None, ge=-2, le=9, description="Latest month.")
+    bill_amt: int | None = Field(default=None, ge=-1_000_000, le=10_000_000)
+    pay_amt: int | None = Field(default=None, ge=0, le=10_000_000)
+    limit_bal: int | None = Field(default=None, gt=0, le=10_000_000)
+    decide: bool = Field(default=False, description="Also ask the Decision Agent (uses the LLM).")
+
+
+class DoNotContactRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=500, description="What the customer asked.")
+
+
+class LiftRequest(BaseModel):
+    note: str = Field(min_length=1, max_length=500, description="Why contact may resume.")
+
+
+class InboxDraft(BaseModel):
+    id: int
+    conversation_id: int
+    customer_id: int
+    status: Literal["pending_approval", "blocked", "approved"]
+    subject: str | None
+    body: str
+    created_at: str
+
+
+class InboxEscalation(BaseModel):
+    id: int = Field(description="The conversation.")
+    customer_id: int
+    status_reason: str | None
+    updated_at: str
+
+
+class Inbox(BaseModel):
+    drafts: list[InboxDraft] = Field(description="Drafts waiting for approval, blocked or unsent.")
+    escalated: list[InboxEscalation] = Field(description="Conversations a person must take.")
+    due_follow_ups: list[FollowUp]
+    calls: list[FollowUp] = Field(description="Follow-ups that asked an officer to call.")
+    total: int
+
+
+Conversation.model_rebuild()  # it refers to FollowUp, defined after it

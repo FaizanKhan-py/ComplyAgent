@@ -2,7 +2,10 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { answer, config, customer, customerDetail, doc, health, mockApi, portfolio } from '../test/fixtures'
+import { AuditTrail } from './AuditTrail'
 import { CustomerRecord } from './CustomerRecord'
+import { FollowUps } from './FollowUps'
+import { Inbox } from './Inbox'
 import { Customers } from './Customers'
 import { Documents } from './Documents'
 import { Playground } from './Playground'
@@ -184,10 +187,12 @@ describe('Customer Records', () => {
     expect(await screen.findByText('No customers are overdue this month')).toBeInTheDocument()
   })
 
-  it('marks an overdue record, shows the message button and goes back to the same list', async () => {
+  it('marks an overdue record, offers to start a conversation and goes back to the same list', async () => {
     mockApi({
       'GET /api/admin/customers/7': () => ({ body: customerDetail }),
+      'GET /api/admin/customers/7/conversation': () => ({ body: null }),
       'GET /api/admin/customers/8': () => ({ body: { ...customerDetail, customer_id: 8, latest_status: 0 } }),
+      'GET /api/admin/customers/8/conversation': () => ({ body: null }),
     })
     const view = render(
       <MemoryRouter initialEntries={[{ pathname: '/customers/7', state: { from: '/customers?payment=overdue' } }]}>
@@ -197,137 +202,362 @@ describe('Customer Records', () => {
       </MemoryRouter>,
     )
     expect(await screen.findByText(/overdue this month \(2 months late on the Sep 2005 bill\)/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Generate message' })).toBeEnabled()
+    expect(await screen.findByRole('button', { name: 'Start conversation' })).toBeEnabled()
     expect(screen.getByRole('link', { name: /Customer Records/ })).toHaveAttribute('href', '/customers?payment=overdue')
     view.unmount()
 
     record('/customers/8')
-    expect(await screen.findByText(/not overdue this month/)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Generate message' })).not.toBeInTheDocument()
+    expect(await screen.findByText(/Nothing is overdue, so there is nothing to collect/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Start conversation' })).not.toBeInTheDocument()
   })
 
-  const draft = {
-    customer_id: 7,
-    risk_level: 'high',
-    status: 'draft',
-    reason: null,
-    decision: {
-      action: 'send_reminder',
-      channel: 'sms',
-      priority: 'medium',
-      reasons: [{ text: 'Two months late, Stage 2.', fact_ids: ['F1'], source_ids: [1] }],
-      needs_human_review: false,
-    },
+  const decision = {
+    action: 'send_reminder',
+    channel: 'email',
+    priority: 'medium',
+    reasons: [{ text: 'Two months late, Stage 2.', fact_ids: ['F1'], source_ids: [1] }],
+    needs_human_review: false,
+  }
+  const outbound = (overrides = {}) => ({
+    id: 1,
+    direction: 'outbound',
+    status: 'pending_approval',
     subject: 'ComplyAgent Finance: about your account',
     body: 'Dear customer,\n\nA reminder that NT$3,913 on your card is overdue. Reference CA-000007\nComplyAgent Finance',
-    sources: [{ number: 1, document_id: 'm1', filename: 'messaging_policy.docx', page_number: null, score: 0.8, text: 'A collections SMS is at most 300 characters long.' }],
-    checks: ['Names ComplyAgent Finance, the amount (NT$3,913) and the reference', '14 of 150 words; the subject has no amount'],
-    corrected: ['the body must contain {reference}'],
-    model: 'gpt-4.1-mini',
-  }
-
-  it('writes a message draft and shows the decision, checks and policy behind it', async () => {
-    const user = userEvent.setup()
-    let asked = 0
-    mockApi({
-      'GET /api/admin/customers/7': () => ({ body: customerDetail }),
-      'POST /api/admin/customers/7/message': () => {
-        asked += 1
-        return { body: draft }
-      },
-    })
-    record('/customers/7')
-    await user.click(await screen.findByRole('button', { name: 'Generate message' }))
-    const card = within(await screen.findByRole('region', { name: 'Message draft' }))
-    expect(await card.findByText(/A reminder that NT\$3,913 on your card is overdue/)).toBeInTheDocument()
-    expect(card.getByText('ComplyAgent Finance: about your account')).toBeInTheDocument()
-    expect(card.getByText('Send a reminder · Email · medium priority')).toBeInTheDocument()
-    expect(card.getByText('High-risk tone')).toBeInTheDocument()
-    expect(card.getByText('Two months late, Stage 2.')).toBeInTheDocument()
-    expect(card.getByText('14 of 150 words; the subject has no amount')).toBeInTheDocument()
-    expect(card.getByText(/Fixed on the second try: the body must contain \{reference\}/)).toBeInTheDocument()
-    expect(card.getByText(/Policies it follows \(messaging_policy.docx\)/)).toBeInTheDocument()
-    expect(card.getByText(/Draft: not sent yet/)).toBeInTheDocument()
-
-    await user.click(card.getByRole('button', { name: 'Write again' }))
-    await waitFor(() => expect(asked).toBe(2))
+    intent: null,
+    intent_summary: null,
+    review: {
+      rounds: [
+        {
+          round: 1,
+          checked_by: 'red_team',
+          passed: false,
+          issues: [],
+          dropped: 1,
+          decision_revised: null,
+          findings: [
+            { target: 'message', severity: 'blocker', issue: 'Too abrupt.', quote: 'Pay now', source_ids: [1], fix: 'Be polite.' },
+          ],
+        },
+        { round: 2, checked_by: 'red_team', passed: true, issues: [], findings: [], dropped: 0, decision_revised: null },
+      ],
+      checks: ['14 of 150 words; the subject has no amount'],
+      sources: [],
+      decision,
+    },
+    edited: false,
+    reviewed_by: null,
+    reviewed_at: null,
+    review_note: null,
+    sent_by: null,
+    sent_at: null,
+    created_at: '2026-10-27T10:00:00+00:00',
+    ...overrides,
   })
+  const conversation = (messages: unknown[] = [outbound()], overrides = {}) => ({
+    id: 3,
+    customer_id: 7,
+    status: 'open',
+    status_reason: null,
+    case_file: {
+      analysed_by: 'model',
+      model: 'gpt-4.1-mini',
+      facts: [{ id: 'F1', text: 'The account is 2 months late.' }],
+      analysis: {
+        summary: 'Two months late and paying part of each bill.',
+        situation: 'partial_payer',
+        urgency: 'high',
+        patterns: [{ text: 'Pays part of each bill.', fact_ids: ['F7'] }],
+        care_flags: [{ text: 'Payments are shrinking.', fact_ids: ['F8'] }],
+        open_questions: ['Can the customer pay the full amount?'],
+      },
+    },
+    decision,
+    created_by: 'officer@example.com',
+    created_at: '2026-10-27T10:00:00+00:00',
+    updated_at: '2026-10-27T10:00:00+00:00',
+    messages,
+    follow_ups: [] as unknown[],
+    ...overrides,
+  })
+  const bodyOf = (api: ReturnType<typeof mockApi>, suffix: string) =>
+    JSON.parse(String(api.calls.find((c) => c.key.endsWith(suffix))!.init.body))
 
-  it('sends the email only after confirmation and says delivery is not connected yet', async () => {
+  it('runs the agents, shows the case file and review, and sends only after approval', async () => {
     const user = userEvent.setup()
-    mockApi({
+    const approved = outbound({
+      status: 'approved',
+      reviewed_by: 'officer@example.com',
+      reviewed_at: '2026-10-27T10:05:00+00:00',
+    })
+    const api = mockApi({
       'GET /api/admin/customers/7': () => ({ body: customerDetail }),
-      'POST /api/admin/customers/7/message': () => ({ body: { ...draft } }),
+      'GET /api/admin/customers/7/conversation': () => ({ body: null }),
+      'POST /api/admin/customers/7/conversation': () => ({ body: conversation() }),
+      'POST /api/admin/messages/1/approve': () => ({ body: conversation([approved]) }),
+      'POST /api/admin/messages/1/send': () => ({
+        body: conversation([
+          { ...approved, status: 'sent', sent_by: 'officer@example.com', sent_at: '2026-10-27T10:06:00+00:00' },
+        ]),
+      }),
     })
     record('/customers/7')
-    await user.click(await screen.findByRole('button', { name: 'Generate message' }))
-    const card = within(await screen.findByRole('region', { name: 'Message draft' }))
-    await user.click(await card.findByRole('button', { name: 'Send email' }))
+    await user.click(await screen.findByRole('button', { name: 'Start conversation' }))
+    const card = within(await screen.findByRole('region', { name: 'Collections conversation' }))
+    expect(await card.findByText('Two months late and paying part of each bill.')).toBeInTheDocument()
+    expect(card.getByText('Pays part of each bill')).toBeInTheDocument() // the situation
+    expect(card.getByText('Payments are shrinking.')).toBeInTheDocument()
+    expect(card.getByText(/Decision: Send a reminder · medium priority/)).toBeInTheDocument()
+    expect(card.getByText('Waiting for approval')).toBeInTheDocument()
+    expect(card.getByText(/Compliance review: 2 rounds/)).toBeInTheDocument()
+    expect(card.getByText(/“Pay now”: Too abrupt./)).toBeInTheDocument()
+    expect(card.getByText(/1 finding dropped/)).toBeInTheDocument()
+    expect(card.queryByRole('button', { name: 'Send email' })).not.toBeInTheDocument()
 
-    expect(screen.getByText('Send this email?')).toBeInTheDocument()
-    const dialogText = screen.getByText('Send this email?').closest('dialog')!.textContent
-    expect(dialogText).toContain('To zainab.khan7@example.net (customer 7)')
-    await user.click(screen.getByRole('button', { name: 'Cancel', hidden: true }))
-    expect(card.queryByText(/Marked as sent/)).not.toBeInTheDocument()
+    await user.click(card.getByRole('button', { name: 'Approve' }))
+    expect(await card.findByText('Approved, ready to send')).toBeInTheDocument()
+    expect(bodyOf(api, '/approve')).toEqual({})
 
     await user.click(card.getByRole('button', { name: 'Send email' }))
     const dialog = within(screen.getByText('Send this email?').closest('dialog')!)
+    expect(dialog.getByText('zainab.khan7@example.net')).toBeInTheDocument()
     await user.click(dialog.getByRole('button', { name: 'Send email', hidden: true }))
-    expect(await card.findByText(/Marked as sent to/)).toBeInTheDocument()
-    expect(card.getByText(/Marked as sent to zainab.khan7@example.net on/)).toBeInTheDocument()
-    expect(card.getByText(/nothing was actually emailed to zainab.khan7@example.net/)).toBeInTheDocument()
-    expect(card.getByRole('button', { name: 'Sent' })).toBeDisabled()
-
-    // A new draft has not been sent.
-    await user.click(card.getByRole('button', { name: 'Write again' }))
-    expect(await card.findByRole('button', { name: 'Send email' })).toBeEnabled()
-    expect(card.queryByText(/Marked as sent/)).not.toBeInTheDocument()
+    expect(await card.findByText(/Sent by officer@example.com on/)).toBeInTheDocument()
+    expect(card.getByText(/nothing was emailed/)).toBeInTheDocument()
+    expect(api.count('POST /api/admin/messages/1/send')).toBe(1)
   })
 
-  it('cannot send to a customer with no email address on record', async () => {
+  it("needs a reason to reject, and writes again with the officer's feedback", async () => {
     const user = userEvent.setup()
-    mockApi({
-      'GET /api/admin/customers/7': () => ({ body: { ...customerDetail, email: null } }),
-      'POST /api/admin/customers/7/message': () => ({ body: draft }),
+    const api = mockApi({
+      'GET /api/admin/customers/7': () => ({ body: customerDetail }),
+      'GET /api/admin/customers/7/conversation': () => ({ body: conversation() }),
+      'POST /api/admin/messages/1/reject': () => ({
+        body: conversation([
+          outbound({ status: 'rejected', reviewed_by: 'officer@example.com', review_note: 'Too formal.' }),
+        ]),
+      }),
+      'POST /api/admin/conversations/3/redraft': () => ({ body: conversation([outbound({ id: 2 })]) }),
     })
     record('/customers/7')
-    expect(await screen.findByText('Not on record')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Generate message' }))
-    const card = within(await screen.findByRole('region', { name: 'Message draft' }))
-    expect(await card.findByRole('button', { name: 'Send email' })).toBeDisabled()
-    expect(card.getByText(/has no email address on record, so it cannot be sent/)).toBeInTheDocument()
+    const card = within(await screen.findByRole('region', { name: 'Collections conversation' }))
+    expect(await card.findByRole('button', { name: 'Reject' })).toBeDisabled()
+    await user.type(card.getByLabelText(/Note or feedback/), 'Too formal.')
+    await user.click(card.getByRole('button', { name: 'Reject' }))
+    expect(await card.findByText(/Draft rejected by officer@example.com: “Too formal.”/)).toBeInTheDocument()
+    expect(bodyOf(api, '/reject')).toEqual({ note: 'Too formal.' })
   })
 
-  it('explains when no message is written, and shows errors', async () => {
+  it('writes again with the feedback in the note', async () => {
     const user = userEvent.setup()
-    let fail = false
+    const api = mockApi({
+      'GET /api/admin/customers/7': () => ({ body: customerDetail }),
+      'GET /api/admin/customers/7/conversation': () => ({ body: conversation() }),
+      'POST /api/admin/conversations/3/redraft': () => ({
+        body: conversation([outbound({ status: 'superseded' }), outbound({ id: 2, body: 'A warmer email.' })]),
+      }),
+    })
+    record('/customers/7')
+    const card = within(await screen.findByRole('region', { name: 'Collections conversation' }))
+    await user.type(await card.findByLabelText(/Note or feedback/), 'Be warmer.')
+    await user.click(card.getByRole('button', { name: 'Write again with this feedback' }))
+    expect(await card.findByText('A warmer email.')).toBeInTheDocument()
+    expect(bodyOf(api, '/redraft')).toEqual({ feedback: 'Be warmer.' })
+  })
+
+  it("takes the customer's reply, shows its intent and the drafted answer, or a hand-over", async () => {
+    const user = userEvent.setup()
+    const sent = outbound({
+      status: 'sent',
+      sent_by: 'officer@example.com',
+      sent_at: '2026-10-27T10:06:00+00:00',
+      reviewed_by: 'officer@example.com',
+    })
+    const inbound = {
+      ...outbound({ id: 2, review: null }),
+      direction: 'inbound',
+      status: 'received',
+      subject: null,
+      body: 'I lost my job. Can I pay less?',
+      intent: 'hardship',
+      intent_summary: 'The customer lost their job and asks to pay less.',
+    }
+    let escalate = false
+    const api = mockApi({
+      'GET /api/admin/customers/7': () => ({ body: customerDetail }),
+      'GET /api/admin/customers/7/conversation': () => ({ body: conversation([sent]) }),
+      'POST /api/admin/conversations/3/inbound': () =>
+        escalate
+          ? {
+              body: conversation([sent, inbound], {
+                status: 'escalated',
+                status_reason: 'The customer disputes the debt.',
+              }),
+            }
+          : { body: conversation([sent, inbound, outbound({ id: 4, body: 'Dear customer, we can help.' })]) },
+    })
+    record('/customers/7')
+    const card = within(await screen.findByRole('region', { name: 'Collections conversation' }))
+    await user.type(await card.findByLabelText('Their email'), 'I lost my job. Can I pay less?')
+    await user.click(card.getByRole('button', { name: "Add the customer's reply" }))
+    expect(await card.findByText('Hardship')).toBeInTheDocument()
+    expect(card.getByText('The customer lost their job and asks to pay less.')).toBeInTheDocument()
+    expect(card.getByText('Dear customer, we can help.')).toBeInTheDocument()
+    expect(bodyOf(api, '/inbound')).toEqual({ body: 'I lost my job. Can I pay less?' })
+
+    escalate = true
+    await user.type(card.getByLabelText('Their email'), 'This is not my debt.')
+    await user.click(card.getByRole('button', { name: "Add the customer's reply" }))
+    expect(await card.findByText('The customer disputes the debt.')).toBeInTheDocument()
+    expect(card.getByText('With a person')).toBeInTheDocument()
+  })
+
+
+  it('shows the Follow-up Agent plan and runs it on request', async () => {
+    const user = userEvent.setup()
+    const sent = outbound({ status: 'sent', sent_by: 'officer@example.com', sent_at: '2026-10-27T10:06:00+00:00' })
+    const scheduled = {
+      id: 9,
+      conversation_id: 3,
+      customer_id: 7,
+      due_at: '2026-10-30T10:06:00+00:00',
+      action: 'send_reminder',
+      reason: 'The contact policy allows a reminder after three days.',
+      status: 'scheduled',
+      outcome: null,
+      created_at: '2026-10-27T10:06:00+00:00',
+      done_at: null,
+    }
+    const api = mockApi({
+      'GET /api/admin/customers/7': () => ({ body: customerDetail }),
+      'GET /api/admin/customers/7/conversation': () => ({
+        body: conversation([sent], { follow_ups: [scheduled] }),
+      }),
+      'POST /api/admin/follow-ups/9/run': () => ({
+        body: conversation([sent, outbound({ id: 5, body: 'A gentle reminder.' })], {
+          follow_ups: [
+            { ...scheduled, status: 'done', outcome: 'A follow-up email was drafted.', done_at: '2026-10-27T11:00:00+00:00' },
+          ],
+        }),
+      }),
+    })
+    record('/customers/7')
+    const card = within(await screen.findByRole('region', { name: 'Collections conversation' }))
+    expect(await card.findByText(/if there is no reply by/)).toBeInTheDocument()
+    expect(card.getByText(/send a reminder/)).toBeInTheDocument()
+    await user.click(card.getByRole('button', { name: 'Run now' }))
+    expect(await card.findByText('A gentle reminder.')).toBeInTheDocument()
+    expect(card.getByText(/A follow-up email was drafted./)).toBeInTheDocument()
+    expect(api.count('POST /api/admin/follow-ups/9/run')).toBe(1)
+  })
+
+  it('runs the what-ifs, flags a fairness gap and asks the Decision Agent', async () => {
+    const user = userEvent.setup()
+    const scenario = (key: string, label: string, kind: string, probability: number, change: number) => ({
+      key,
+      label,
+      kind,
+      probability,
+      change,
+      risk_level: probability >= 0.7 ? 'high' : probability >= 0.4 ? 'medium' : 'low',
+      predicted_default: probability >= 0.5,
+    })
+    const simulation = {
+      customer_id: 7,
+      model_name: 'XGBoost (tuned)',
+      threshold: 0.5,
+      base: { probability: 0.62, risk_level: 'medium', predicted_default: true },
+      scenarios: [
+        scenario('catches_up', 'Catches up on every month', 'behaviour', 0.21, -0.41),
+        scenario('sex', 'Same record, sex male', 'fairness', 0.7, 0.08),
+      ],
+      custom: null,
+    }
+    const api = mockApi({
+      'GET /api/admin/customers/7': () => ({ body: customerDetail }),
+      'GET /api/admin/customers/7/conversation': () => ({ body: null }),
+      'GET /api/admin/customers/7/counterfactuals': () => ({ body: simulation }),
+      'POST /api/admin/customers/7/counterfactuals': () => ({
+        body: {
+          ...simulation,
+          custom: {
+            probability: 0.81,
+            risk_level: 'high',
+            predicted_default: true,
+            change: 0.19,
+            changes: { repayment_status: 4 },
+            features: {},
+            decision_error: null,
+            recommendation: {
+              ...decision,
+              action: 'escalate_to_human',
+              reasons: [{ text: 'Four months late.', fact_ids: ['F1'], source_ids: [] }],
+            },
+          },
+        },
+      }),
+    })
+    record('/customers/7')
+    const card = within(await screen.findByRole('region', { name: 'Counterfactual simulator' }))
+    await user.click(card.getByRole('button', { name: 'Run what-ifs' }))
+    expect(await card.findByText('Catches up on every month')).toBeInTheDocument()
+    expect(card.getByText('-41.0 points')).toBeInTheDocument()
+    expect(card.getByText(/Changing only a personal attribute moves the prediction by up to 8%/)).toBeInTheDocument()
+
+    await user.selectOptions(card.getByLabelText('Payment status'), '4')
+    await user.click(card.getByLabelText(/Also ask the Decision Agent/))
+    await user.click(card.getByRole('button', { name: 'Simulate' }))
+    expect(await card.findByText('Escalate to a collections officer')).toBeInTheDocument()
+    expect(card.getByText('Four months late.')).toBeInTheDocument()
+    const sent = JSON.parse(String(api.calls.find((c) => c.key.startsWith('POST'))!.init.body))
+    expect(sent).toMatchObject({ repayment_status: 4, decide: true })
+  })
+
+  it('records a request to stop contact, blocks new emails, and lifts it with a reason', async () => {
+    const user = userEvent.setup()
+    let flagged = false
+    const flag = { reason: 'Asked by phone to stop.', set_by: 'officer@example.com', set_at: '2026-10-27T10:00:00+00:00' }
+    const api = mockApi({
+      'GET /api/admin/customers/7': () => ({ body: { ...customerDetail, do_not_contact: flagged ? flag : null } }),
+      'GET /api/admin/customers/7/conversation': () => ({ body: null }),
+      'POST /api/admin/customers/7/do-not-contact': () => {
+        flagged = true
+        return { body: { ...customerDetail, do_not_contact: flag } }
+      },
+      'POST /api/admin/customers/7/do-not-contact/lift': () => {
+        flagged = false
+        return { body: { ...customerDetail, do_not_contact: null } }
+      },
+    })
+    record('/customers/7')
+    expect(await screen.findByRole('button', { name: 'Start conversation' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Customer asked to stop contact' }))
+    await user.type(screen.getByLabelText('What did the customer ask?'), 'Asked by phone to stop.')
+    await user.click(screen.getByRole('button', { name: 'Stop all contact' }))
+    expect(await screen.findByText(/Do not contact./)).toBeInTheDocument()
+    expect(screen.getByText(/recorded by officer@example.com/)).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Start conversation' })).not.toBeInTheDocument())
+
+    await user.click(screen.getByRole('button', { name: 'Lift' }))
+    await user.type(screen.getByLabelText('Why may contact resume?'), 'The customer called back.')
+    await user.click(screen.getByRole('button', { name: 'Allow contact again' }))
+    expect(await screen.findByRole('button', { name: 'Start conversation' })).toBeInTheDocument()
+    expect(JSON.parse(String(api.calls.find((c) => c.key.endsWith('/lift'))!.init.body))).toEqual({
+      note: 'The customer called back.',
+    })
+  })
+
+  it('shows why a conversation could not start', async () => {
+    const user = userEvent.setup()
     mockApi({
       'GET /api/admin/customers/7': () => ({ body: customerDetail }),
-      'POST /api/admin/customers/7/message': () =>
-        fail
-          ? failure(503, 'llm_unreachable', 'Could not reach Azure.')()
-          : {
-              body: {
-                ...draft,
-                status: 'not_written',
-                reason: 'The Decision Agent escalated this account to a person, so no automated message is written.',
-                decision: { ...draft.decision, action: 'escalate_to_human', channel: 'phone' },
-                body: null,
-                checks: [],
-                corrected: [],
-                sources: [],
-              },
-            },
+      'GET /api/admin/customers/7/conversation': () => ({ body: null }),
+      'POST /api/admin/customers/7/conversation': failure(503, 'llm_unreachable', 'Could not reach Azure.'),
     })
     record('/customers/7')
-    await user.click(await screen.findByRole('button', { name: 'Generate message' }))
-    expect(await screen.findByText(/No email was written. The Decision Agent escalated/)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Copy' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Send email' })).not.toBeInTheDocument()
-
-    fail = true
-    await user.click(screen.getByRole('button', { name: 'Write again' }))
-    expect(await screen.findByText(/Could not write the message: Could not reach Azure./)).toBeInTheDocument()
+    await user.click(await screen.findByRole('button', { name: 'Start conversation' }))
+    expect(await screen.findByText('Could not reach Azure.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Start conversation' })).toBeEnabled()
   })
 
   const record = (path: string) =>
@@ -735,5 +965,116 @@ describe('Predict Dataset', () => {
     page(<PredictDataset />)
     expect(await screen.findByText('No trained model found. Run the notebook.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Choose file' })).toBeDisabled()
+  })
+})
+
+describe('Audit Trail', () => {
+  it('lists agent steps and officer actions, filters them and shows the details', async () => {
+    const user = userEvent.setup()
+    const event = (id: number, actor: string, name: string, summary: string, detail: object | null = null) => ({
+      id,
+      created_at: '2026-10-27T10:00:00+00:00',
+      actor,
+      event: name,
+      customer_id: 7,
+      conversation_id: 3,
+      message_id: null,
+      summary,
+      detail,
+    })
+    const api = mockApi({
+      'GET /api/admin/audit?limit=50': () => ({
+        body: {
+          events: [
+            event(2, 'officer@example.com', 'draft.approved', 'Approved.'),
+            event(1, 'Decision Agent', 'agent.decision', 'Recommended send reminder by email.', { model: 'gpt-4.1-mini' }),
+          ],
+          next_before: null,
+        },
+      }),
+      'GET /api/admin/audit?customer_id=7&limit=50': () => ({ body: { events: [], next_before: null } }),
+      'GET /api/admin/audit?customer_id=7&event=agent&limit=50': () => ({
+        body: { events: [event(1, 'Decision Agent', 'agent.decision', 'Recommended send reminder.')], next_before: null },
+      }),
+    })
+    page(<AuditTrail />)
+    expect(await screen.findByText('Approved.')).toBeInTheDocument()
+    expect(screen.getByText('officer@example.com')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Details' }))
+    expect(screen.getByText(/"model": "gpt-4.1-mini"/)).toBeInTheDocument()
+
+    await user.type(screen.getByPlaceholderText('Customer number'), '7')
+    await user.selectOptions(screen.getByLabelText('Show'), 'agent')
+    expect(await screen.findByText('Recommended send reminder.')).toBeInTheDocument()
+    expect(api.count('GET /api/admin/audit?customer_id=7&event=agent&limit=50')).toBe(1)
+  })
+})
+
+describe('Follow-ups', () => {
+  it('lists scheduled follow-ups and runs the due ones', async () => {
+    const user = userEvent.setup()
+    mockApi({
+      'GET /api/admin/follow-ups?status=scheduled': () => ({
+        body: [
+          {
+            id: 9,
+            conversation_id: 3,
+            customer_id: 7,
+            due_at: '2020-01-01T00:00:00+00:00',
+            action: 'schedule_call',
+            reason: 'Two emails without a reply.',
+            status: 'scheduled',
+            outcome: null,
+            created_at: '2020-01-01T00:00:00+00:00',
+            done_at: null,
+          },
+        ],
+      }),
+      'POST /api/admin/follow-ups/run-due': () => ({ body: { due: 1, done: [9], failed: [] } }),
+    })
+    page(<FollowUps />)
+    expect(await screen.findByText('Call the customer')).toBeInTheDocument()
+    expect(screen.getByText('Due now')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Run due follow-ups' }))
+    expect(await screen.findByText('1 of 1 due follow-up(s) done.')).toBeInTheDocument()
+  })
+})
+
+describe('Approvals', () => {
+  it('lists every draft, hand-over and call that waits for an officer', async () => {
+    mockApi({
+      'GET /api/admin/inbox': () => ({
+        body: {
+          drafts: [
+            {
+              id: 4,
+              conversation_id: 3,
+              customer_id: 7,
+              status: 'blocked',
+              subject: 'About your account',
+              body: 'Dear customer, a reminder.',
+              created_at: '2026-10-27T10:00:00+00:00',
+            },
+          ],
+          escalated: [{ id: 5, customer_id: 8, status_reason: 'The customer disputes the debt.', updated_at: '2026-10-27T10:00:00+00:00' }],
+          due_follow_ups: [],
+          calls: [],
+          total: 2,
+        },
+      }),
+    })
+    page(<Inbox />)
+    expect(await screen.findByText('Blocked by the Red Team')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Customer 7' })).toHaveAttribute('href', '/customers/7')
+    expect(screen.getByText(/The customer disputes the debt./)).toBeInTheDocument()
+    expect(within(screen.getByRole('region', { name: 'Calls to make' })).getByText('Nothing here.')).toBeInTheDocument()
+  })
+
+  it('says when nothing is waiting', async () => {
+    mockApi({
+      'GET /api/admin/inbox': () => ({ body: { drafts: [], escalated: [], due_follow_ups: [], calls: [], total: 0 } }),
+    })
+    page(<Inbox />)
+    expect(await screen.findByText('All clear')).toBeInTheDocument()
   })
 })

@@ -3,8 +3,10 @@
     prompt template  |  chat model with structured output (a Pydantic schema)
 
     policy_answer_chain   the policy assistant: memory + <source> passages -> PolicyAnswer
-    structured_chain      one system prompt + one request -> any schema; the Decision Agent
-                          (Recommendation) and the message writer (MessageDraft) use it
+    structured_chain      one system prompt + one request -> any schema; the Case Analyst,
+                          the Decision Agent, the message writer and the Red Team use it
+    conversation_chain    the same, after an email thread (memory.email_thread): the
+                          Communication Agent replying to a customer
 
 `include_raw=True` makes a reply that does not fit the schema come back as `parsing_error`
 instead of raising, so run() reports it like any other incomplete answer.
@@ -18,7 +20,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables import Runnable
 from pydantic import BaseModel, Field
 
-from .prompts import policy_assistant_template, single_request_template
+from .prompts import conversation_template, policy_assistant_template, single_request_template
 
 Schema = TypeVar("Schema", bound=BaseModel)
 
@@ -55,6 +57,13 @@ def structured_chain(
 ) -> Runnable:
     """Input: request (the facts, emails and passages the prompt describes)."""
     return single_request_template(system_prompt) | _structured(model, provider, schema)
+
+
+def conversation_chain(
+    model: BaseChatModel, provider: str, system_prompt: str, schema: type[BaseModel]
+) -> Runnable:
+    """Inputs: history (the email thread as chat messages) and request."""
+    return conversation_template(system_prompt) | _structured(model, provider, schema)
 
 
 def run(chain: Runnable, inputs: dict, schema: type[Schema]) -> Schema:

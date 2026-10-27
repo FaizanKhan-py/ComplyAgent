@@ -16,8 +16,15 @@ dataset (30,000 customers, six months of payment history each), with made-up ema
 | Customer records | Customers | Search, filter and open any customer: details, payment history, risk |
 | Default prediction | Customer page, Predict | XGBoost model trained in the notebook, saved as files the backend loads |
 | AI Assistant | AI Assistant | One chat. A LangChain agent searches the policies and cites them [n]; for admins it also looks up customers, the portfolio and the Decision Agent. Remembers the conversation |
-| Decision Agent | Customer page → Generate message | Recommends reminder / payment plan / call / escalation; every reason cites a fact or policy |
-| Email drafts | Customer page | Written in the policy's tone, then checked: no threats, no invented amounts or links |
+| Case Analyst Agent | Customer page → Start conversation | Reads the payment history and writes the case file: summary, situation, urgency, patterns, care flags; every finding cites a fact |
+| Decision Agent | Customer page → Start conversation | Reads the case file and the policies; recommends reminder / payment plan / call / escalation; every reason cites a fact or policy |
+| Compliance Red Team + loop | Customer page → Compliance review | A second model attacks every draft (and the action behind it); the writer rewrites until nothing is left to fix, up to 4 rounds, or the draft is blocked |
+| Communication Agent | Customer page → The customer replied? | Reads the whole email thread, works out what the customer wants, and drafts the reply, or hands the conversation to a person (dispute, complaint, stop contact) |
+| Human approval | Customer page | Every email waits for an officer: approve (edit is re-checked), reject with a reason, write again with feedback, then send. Who did what and when is stored |
+| Follow-up Agent | Follow-ups, customer page | After each email it plans, from the contact policy, what happens without a reply: wait N days, then a reminder (drafted and checked like any email), a call, or a hand-over |
+| Counterfactual Simulator | Customer page → Counterfactual simulator | What-ifs on the risk model (pays in full, catches up, misses next month...), a fairness check (only sex or education changed), and your own change, optionally decided by the Decision Agent |
+| Agent orchestration | (backend) `orchestration/graph.py` | One LangGraph `StateGraph` connects the agents; the Red Team loop is its conditional edges. `GET /api/admin/agents/graph` draws it |
+| Audit trail | Audit Trail | Every agent step and officer action, append-only (the database refuses changes), filterable by customer and event |
 | Policy documents | AI Assistant → Documents | Upload PDF, Word, text or Markdown; they are chunked, embedded and indexed |
 
 ## How the pieces connect
@@ -37,6 +44,26 @@ dataset (30,000 customers, six months of payment history each), with made-up ema
                                          ▼
                               Azure OpenAI (or Claude)
 ```
+
+## How the agents connect (LangGraph)
+
+```
+ Start conversation          Customer replied / follow-up due
+        │                                │
+  case_analyst ─► decision_agent ─►  writer ─(dispute, complaint, stop contact)─► hand to a person
+                                         │
+                                     guardrails ─(rule broken)─► writer        (max 4 rounds,
+                                         │                                       then "blocked")
+                                      red_team ─(blocker)─► writer
+                                         │      (action challenged: decision_agent decides again)
+                                         ▼
+                      draft waits for an officer: approve / edit / reject / write again
+                                         │ send
+                                         ▼
+                      Follow-up Agent plans the next step ─► due: reminder, call or hand-over
+```
+
+Every step above is written to the audit trail (`app/core/audit.py`).
 
 ## The LangChain layer: `backend/app/langchain/`
 
@@ -84,7 +111,15 @@ app/
 | | `evaluation.py` | Scores the RAG system against `sample_policies/eval_questions.json` |
 | `langchain/` | see above | Models, prompts, chains, memory, indexes, agents, and `llm.py` |
 | `decisions/` | `decision.py` | The Decision Agent: facts + policies → one checked recommendation |
-| | `messages.py` | The email writer: decision + messaging policy → one checked draft |
+| | `case_analyst.py` | The Case Analyst Agent: payment facts → a case file the Decision Agent reads |
+| | `messages.py` | The email writer: decision + messaging policy → one draft, fixed guardrails |
+| | `red_team.py` | The Compliance Red Team Agent: attacks a draft; findings must quote the email |
+| | `compliance_loop.py` | Writer ⇄ guardrails ⇄ Red Team, round after round; can make the Decision Agent decide again |
+| | `conversation.py` | One email thread per customer: runs the graph, stores every draft, approval workflow |
+| | `follow_up.py` | The Follow-up Agent: plans the follow-up after a send, carries it out when due |
+| `orchestration/` | `graph.py` | The LangGraph `StateGraph`: every agent as a node, the compliance loop as its edges |
+| `core/` | `audit.py` | The append-only audit trail |
+| `risk/` | `counterfactual.py` | The Counterfactual Simulator: what-ifs and the fairness check on the risk model |
 | | `guidance.py` | Turns a customer's facts into policy questions for the customer page |
 | `risk/` | `model_files.py` | Loads the notebook's model files (`backend/models/risk_model/`) |
 | | `risk_model.py` | Scores the customers in the database with that model |
@@ -123,6 +158,10 @@ cd frontend
 npm install
 npm run dev                      # http://localhost:5173
 ```
+
+**Follow-ups** run when you press *Run due follow-ups* on the Follow-ups page, or with
+`.venv\Scripts\python -m app.manage run-follow-ups` (for a scheduled task). To have the
+backend run them itself, set `FOLLOW_UP_INTERVAL_MINUTES=60` in `backend/.env`.
 
 ## Retrain the model
 

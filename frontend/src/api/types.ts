@@ -226,7 +226,16 @@ export interface MonthlyRecord {
   pay_amt: number
 }
 
+export interface DoNotContact {
+  reason: string
+  /** An officer, or the Communication Agent. */
+  set_by: string
+  set_at: string
+}
+
 export interface CustomerDetail extends CustomerSummary {
+  /** The customer asked not to be contacted: no email is written or sent. */
+  do_not_contact?: DoNotContact | null
   on_time_payment_rate: number | null
   avg_payment_delay: number | null
   avg_credit_utilization: number | null
@@ -380,4 +389,213 @@ export interface AssistantReply {
   conversation_id: string
   /** The tools the assistant called, in order, with their arguments as JSON. */
   steps: { tool: string; input: string }[]
+}
+
+// --- Collections conversations: every agent, the email thread, the officer's approval -------
+
+export interface CaseFinding {
+  text: string
+  fact_ids: string[]
+}
+
+export interface CaseAnalysis {
+  summary: string
+  situation:
+    | 'paid_up'
+    | 'early_arrears'
+    | 'persistent_arrears'
+    | 'worsening'
+    | 'improving'
+    | 'partial_payer'
+    | 'stopped_paying'
+  urgency: 'low' | 'medium' | 'high' | 'critical'
+  patterns: CaseFinding[]
+  care_flags: CaseFinding[]
+  open_questions: string[]
+}
+
+export interface CaseFile {
+  analysed_by: 'rule' | 'model'
+  model: string | null
+  facts: { id: string; text: string }[]
+  analysis: CaseAnalysis
+}
+
+export interface RedTeamFinding {
+  target: 'message' | 'decision'
+  severity: 'blocker' | 'warning'
+  issue: string
+  quote: string
+  source_ids: number[]
+  fix: string
+}
+
+export interface ReviewRound {
+  round: number
+  checked_by: 'guardrails' | 'red_team'
+  passed: boolean
+  issues: string[]
+  findings: RedTeamFinding[]
+  /** Red Team findings dropped because they quoted words that are not in the email. */
+  dropped: number
+  decision_revised: { from: string; to: string } | null
+}
+
+export interface DraftReview {
+  rounds: ReviewRound[]
+  checks: string[]
+  sources: PolicyPassage[]
+  decision: Recommendation
+}
+
+export type MessageStatus =
+  | 'pending_approval'
+  | 'blocked'
+  | 'approved'
+  | 'rejected'
+  | 'superseded'
+  | 'sent'
+  | 'received'
+
+export interface ConversationMessage {
+  id: number
+  direction: 'outbound' | 'inbound'
+  status: MessageStatus
+  subject: string | null
+  body: string
+  /** Inbound: what the customer's email is about. */
+  intent: string | null
+  intent_summary: string | null
+  review: DraftReview | null
+  /** An officer changed the agent's text before approving it. */
+  edited: boolean
+  reviewed_by: string | null
+  reviewed_at: string | null
+  review_note: string | null
+  sent_by: string | null
+  sent_at: string | null
+  created_at: string
+}
+
+export interface Conversation {
+  id: number
+  customer_id: number
+  status: 'open' | 'escalated' | 'closed'
+  status_reason: string | null
+  case_file: CaseFile
+  decision: Recommendation
+  created_by: string
+  created_at: string
+  updated_at: string
+  messages: ConversationMessage[]
+  /** What the Follow-up Agent planned. */
+  follow_ups: FollowUp[]
+}
+
+export interface FollowUp {
+  id: number
+  conversation_id: number
+  customer_id: number
+  due_at: string
+  action: 'send_reminder' | 'schedule_call' | 'escalate_to_human'
+  reason: string
+  status: 'scheduled' | 'done' | 'cancelled'
+  outcome: string | null
+  created_at: string
+  done_at: string | null
+}
+
+export interface FollowUpRun {
+  due: number
+  done: number[]
+  failed: { id: number; error: string }[]
+}
+
+// --- Audit trail ------------------------------------------------------------------------------
+
+export interface AuditEvent {
+  id: number
+  created_at: string
+  /** A person's email, or the agent's name. */
+  actor: string
+  event: string
+  customer_id: number | null
+  conversation_id: number | null
+  message_id: number | null
+  summary: string
+  detail: Record<string, unknown> | null
+}
+
+export interface AuditList {
+  events: AuditEvent[]
+  next_before: number | null
+}
+
+export interface AuditQuery {
+  customer_id?: number
+  event?: string
+  before?: number
+  limit?: number
+}
+
+// --- Counterfactual Simulator -----------------------------------------------------------------
+
+export interface SimulatedOutcome {
+  probability: number
+  risk_level: RiskLevel
+  predicted_default: boolean
+}
+
+export interface Scenario extends SimulatedOutcome {
+  key: string
+  label: string
+  kind: 'behaviour' | 'fairness'
+  /** Probability minus the record's own probability. */
+  change: number
+}
+
+export interface CustomScenario extends SimulatedOutcome {
+  change: number
+  changes: Record<string, number>
+  features: Record<string, number>
+  recommendation: Recommendation | null
+  decision_error: string | null
+}
+
+export interface Simulation {
+  customer_id: number
+  model_name: string | null
+  threshold: number
+  base: SimulatedOutcome
+  scenarios: Scenario[]
+  custom: CustomScenario | null
+}
+
+export interface SimulateRequest {
+  repayment_status?: number
+  bill_amt?: number
+  pay_amt?: number
+  limit_bal?: number
+  decide?: boolean
+}
+
+// --- Approvals inbox ----------------------------------------------------------------------------
+
+export interface InboxDraft {
+  id: number
+  conversation_id: number
+  customer_id: number
+  status: 'pending_approval' | 'blocked' | 'approved'
+  subject: string | null
+  body: string
+  created_at: string
+}
+
+export interface Inbox {
+  drafts: InboxDraft[]
+  escalated: { id: number; customer_id: number; status_reason: string | null; updated_at: string }[]
+  due_follow_ups: FollowUp[]
+  /** Follow-ups that asked an officer to call. */
+  calls: FollowUp[]
+  total: number
 }

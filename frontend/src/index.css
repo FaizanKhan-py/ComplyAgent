@@ -1071,3 +1071,46 @@ input[aria-invalid='true'] { border-color: var(--error); box-shadow: 0 0 0 3px v
   .chat-widget { right: 16px; bottom: 16px; }
   .chat-panel { height: calc(100vh - 100px); }
 }
+
+/* Customer record: the collections conversation (case file, email thread, approvals). */
+.case-file { display: flex; flex-direction: column; gap: var(--s3); margin-top: var(--s2); }
+.case-file > p { margin: 0; max-width: 75ch; }
+.thread { display: flex; flex-direction: column; gap: var(--s4); margin: 0; padding: 0; list-style: none; }
+.thread-item { display: flex; flex-direction: column; gap: var(--s2); }
+.thread-in { padding-right: 12%; }
+.thread-out { padding-left: 12%; }
+.thread-old { padding-left: 12%; }
+.thread-head { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+.thread-who { font-weight: 600; font-size: 0.9rem; }
+.message-in { border-left-color: var(--info); background: var(--surface); }
+.thread-edit, .thread-actions, .thread-reply { display: flex; flex-direction: column; gap: var(--s2); }
+.thread-reply { padding-top: var(--s3); border-top: 1px solid var(--rule); }
+.thread-reply h3 { margin: 0; font-size: 1rem; }
+.thread-reply p { margin: 0; }
+.review-rounds { margin: var(--s2) 0 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: var(--s2); }
+.review-rounds ul { margin: 4px 0 0; padding-left: 1.2em; }
+.review-rounds p { margin: 4px 0 0; }
+@media (max-width: 640px) { .thread-in, .thread-out, .thread-old { padding-left: 0; padding-right: 0; } }
+
+/* Follow-up Agent: the next follow-up under the conversation. */
+.follow-up { padding: var(--s3); border: 1px dashed var(--rule-strong); border-radius: 6px; }
+.follow-up p { margin: 0; }
+.follow-up p + p { margin-top: var(--s1); }
+
+/* Audit Trail: the JSON behind an event. */
+.audit-detail { margin: var(--s2) 0 0; padding: var(--s2) var(--s3); max-height: 18rem; overflow: auto; border: 1px solid var(--rule); border-radius: 4px; background: var(--surface-2); font-size: 0.8rem; white-space: pre-wrap; word-break: break-word; }
+
+/* Counterfactual simulator. */
+.simulator-form { display: flex; flex-direction: column; gap: var(--s2); padding-top: var(--s3); border-top: 1px solid var(--rule); }
+.simulator-form h3 { margin: 0; font-size: 1rem; }
+.check { display: inline-flex; align-items: center; gap: 8px; font-size: 0.9rem; }
+.change-up { color: var(--error); font-weight: 600; }
+.change-down { color: var(--ok); font-weight: 600; }
+
+/* Approvals inbox, and the customer's request to stop contact. */
+.inbox-list { display: flex; flex-direction: column; gap: var(--s3); margin: 0; padding: 0; list-style: none; }
+.inbox-list > li { padding-bottom: var(--s3); border-bottom: 1px solid var(--rule); }
+.inbox-list > li:last-child { padding-bottom: 0; border-bottom: 0; }
+.inbox-list p { margin: 4px 0 0; }
+.dnc { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s2); }
+.dnc-form { display: flex; flex-direction: column; gap: var(--s2); margin-top: var(--s2); max-width: 36rem; }

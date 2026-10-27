@@ -11,6 +11,7 @@ Run from the backend directory with the virtualenv active:
     python -m app.manage score-customers       # after running the notebook
     python -m app.manage add-documents ../sample_policies/*_policy.*
     python -m app.manage evaluate-rag
+    python -m app.manage run-follow-ups       # the Follow-up Agent: every follow-up now due
 
 Sign-up through the web page creates an ordinary user, unless the address is listed in
 ADMIN_EMAILS. Otherwise administrators can only be made here, by someone who already has
@@ -139,6 +140,7 @@ def main(
     docs.add_argument("files", nargs="+", type=Path)
     check = commands.add_parser("evaluate-rag", help="ask the test questions and score the answers")
     check.add_argument("--questions", type=Path, default=evaluation.DEFAULT_QUESTIONS)
+    commands.add_parser("run-follow-ups", help="carry out the follow-ups that are due")
     args = parser.parse_args(argv)
 
     load_dotenv(BACKEND_DIR / ".env")
@@ -170,6 +172,16 @@ def main(
             return 0
         if args.command in ("add-documents", "evaluate-rag"):
             return _knowledge_base_command(args, kb or _build_kb(settings, db))
+        if args.command == "run-follow-ups":
+            from .decisions import follow_up
+            from .decisions.conversation import Conversations
+
+            kb = kb or _build_kb(settings, db)
+            result = follow_up.run_due(kb, Portfolio(db), kb.generator, Conversations(db))
+            print(f"{result['due']} follow-up(s) due, {len(result['done'])} done.")
+            for failure in result["failed"]:
+                print(f"Follow-up {failure['id']} failed: {failure['error']}", file=sys.stderr)
+            return 1 if result["failed"] else 0
         if args.command == "score-customers":
             result = risk_model.score_all(db, models_dir or settings.risk_model_dir)
             test = result["test"]

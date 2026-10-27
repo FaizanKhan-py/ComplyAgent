@@ -1,5 +1,6 @@
-"""SQLite store: the knowledge base (documents, chunks, embeddings), user accounts and the
-customer portfolio (customers, payment history, risk predictions)."""
+"""SQLite store: the knowledge base (documents, chunks, embeddings), user accounts, the
+customer portfolio (customers, payment history, risk predictions) and the collections
+conversations (each customer's email thread, with every draft and who approved it)."""
 
 from __future__ import annotations
 
@@ -102,6 +103,62 @@ CREATE TABLE IF NOT EXISTS predictions (
     default_probability REAL NOT NULL,
     predicted_default   INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS conversations (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    customer_id   INTEGER NOT NULL REFERENCES customers(customer_id) ON DELETE CASCADE,
+    status        TEXT NOT NULL,                 -- open | escalated | closed
+    status_reason TEXT,
+    case_file     TEXT NOT NULL,                 -- JSON: the Case Analyst's case file and facts
+    decision      TEXT NOT NULL,                 -- JSON: the Decision Agent's recommendation
+    created_by    TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_conversations_customer ON conversations(customer_id);
+CREATE TABLE IF NOT EXISTS conversation_messages (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    direction       TEXT NOT NULL,               -- outbound (to the customer) | inbound
+    -- outbound: pending_approval | blocked | approved | rejected | superseded | sent
+    -- inbound:  received
+    status          TEXT NOT NULL,
+    subject         TEXT,
+    body            TEXT NOT NULL,
+    intent          TEXT,                        -- inbound: what the customer's email is about
+    intent_summary  TEXT,
+    review          TEXT,                        -- JSON: Red Team rounds, checks, sources
+    draft_subject   TEXT,                        -- the agent's text, when an officer edited it
+    draft_body      TEXT,
+    reviewed_by     TEXT,                        -- the officer who approved or rejected it
+    reviewed_at     TEXT,
+    review_note     TEXT,
+    sent_by         TEXT,
+    sent_at         TEXT,
+    created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_messages_conversation ON conversation_messages(conversation_id);
+CREATE TABLE IF NOT EXISTS follow_ups (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    customer_id     INTEGER NOT NULL,
+    due_at          TEXT NOT NULL,               -- ISO time; the Follow-up Agent's wait
+    action          TEXT NOT NULL,               -- send_reminder | schedule_call | escalate...
+    reason          TEXT NOT NULL,
+    status          TEXT NOT NULL,               -- scheduled | done | cancelled
+    outcome         TEXT,
+    created_at      TEXT NOT NULL,
+    done_at         TEXT,
+    last_message_id INTEGER                      -- the thread's newest message when it ran
+);
+CREATE INDEX IF NOT EXISTS idx_follow_ups_due ON follow_ups(status, due_at);
+-- Customers who asked not to be contacted. No foreign key on purpose: the request outlives a
+-- re-import of the customer data. Lifting it deletes the row; the audit trail keeps the history.
+CREATE TABLE IF NOT EXISTS do_not_contact (
+    customer_id INTEGER PRIMARY KEY,
+    reason      TEXT NOT NULL,
+    set_by      TEXT NOT NULL,                   -- an officer, or the Communication Agent
+    set_at      TEXT NOT NULL
+);
 """
 
 USER_COLUMNS = "id, email, full_name, role, created_at, last_login_at"
@@ -125,6 +182,10 @@ class Database:
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(customers)")}
             if "email" not in columns:
                 conn.execute("ALTER TABLE customers ADD COLUMN email TEXT")
+            # follow_ups tables made before call tasks were tracked get the column.
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(follow_ups)")}
+            if "last_message_id" not in columns:
+                conn.execute("ALTER TABLE follow_ups ADD COLUMN last_message_id INTEGER")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

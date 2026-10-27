@@ -1,8 +1,9 @@
 """The language model, as the rest of the backend sees it: one object, LangChainGenerator.
 
     generate(question, sources, history)  the policy assistant's answer, with [n] citations
-    structured(system, user, schema)      a reply that must match a Pydantic schema (the
-                                          Decision Agent and the message writer use it)
+    structured(system, user, schema)      a reply that must match a Pydantic schema (every
+                                          collections agent uses it); with history=, it
+                                          comes after an email thread
     health()                              for the admin health page
     chat_model                            the LangChain model itself, for the Collections Agent
 
@@ -63,7 +64,9 @@ class AnswerGenerator(Protocol):
     def generate(
         self, question: str, sources: list[SourcePassage], history: list[dict[str, str]]
     ) -> GeneratedAnswer: ...
-    def structured(self, system: str, user: str, schema: type[_Schema]) -> _Schema: ...
+    def structured(
+        self, system: str, user: str, schema: type[_Schema], history: list | None = None
+    ) -> _Schema: ...
     def health(self) -> tuple[str, str]: ...
 
 
@@ -105,10 +108,16 @@ class LangChainGenerator:
             parsed.answer.strip(), parsed.insufficient_evidence, parsed.cited_source_ids
         )
 
-    def structured(self, system: str, user: str, schema: type[_Schema]) -> _Schema:
-        """One request whose reply must match `schema`."""
-        chain = chains.structured_chain(self.chat_model, self.provider, system, schema)
-        return self._run(chain, {"request": user}, schema)
+    def structured(
+        self, system: str, user: str, schema: type[_Schema], history: list | None = None
+    ) -> _Schema:
+        """One request whose reply must match `schema`. `history`: LangChain messages that come
+        before it (an email thread)."""
+        if history is None:
+            chain = chains.structured_chain(self.chat_model, self.provider, system, schema)
+            return self._run(chain, {"request": user}, schema)
+        chain = chains.conversation_chain(self.chat_model, self.provider, system, schema)
+        return self._run(chain, {"history": history, "request": user}, schema)
 
     def _run(self, chain, inputs: dict, schema: type[_Schema]) -> _Schema:
         try:

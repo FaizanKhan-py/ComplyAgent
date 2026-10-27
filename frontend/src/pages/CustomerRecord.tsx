@@ -1,14 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
 import { api } from '../api/client'
 import type { CustomerDetail } from '../api/types'
-import { MessageDraft, type MessageState } from '../components/MessageDraft'
+import { CollectionsConversation } from '../components/CollectionsConversation'
+import { DoNotContact } from '../components/DoNotContact'
 import { PolicyGuidance } from '../components/PolicyGuidance'
+import { Simulator } from '../components/Simulator'
 import { PaymentStrip, ProbabilityGauge } from '../components/visuals'
 import { ActualBadge, PaymentBadge, RiskBadge } from '../components/RiskBadge'
 import { ErrorState, Loading, Notice, PageHeader } from '../components/ui'
 import { useResource } from '../hooks/useResource'
-import { errorMessage, formatMoney, formatPercent } from '../lib/format'
+import { formatMoney, formatPercent } from '../lib/format'
 
 function monthsLate(months: number): string {
   return `${months} month${months === 1 ? '' : 's'}`
@@ -66,24 +67,7 @@ export function CustomerRecord() {
   const created = state
   const back = state?.from?.startsWith('/customers') ? state.from : '/customers'
 
-  // The draft belongs to one customer: opening another record hides it, leaving cancels it.
-  const [drafted, setDrafted] = useState<{ id: number; state: MessageState } | null>(null)
-  const message = drafted?.id === id ? drafted.state : null
-  const pending = useRef<AbortController | null>(null)
-  useEffect(() => () => pending.current?.abort(), [id])
-
-  async function generate() {
-    pending.current?.abort()
-    const controller = new AbortController()
-    pending.current = controller
-    setDrafted({ id, state: { phase: 'loading' } })
-    try {
-      const result = await api.generateMessage(id, controller.signal)
-      setDrafted({ id, state: { phase: 'done', result } })
-    } catch (error) {
-      if (!controller.signal.aborted) setDrafted({ id, state: { phase: 'error', message: errorMessage(error) } })
-    }
-  }
+  const overdue = c?.latest_status != null && c.latest_status > 0
 
   return (
     <>
@@ -110,21 +94,15 @@ export function CustomerRecord() {
                 ? `Credit card account · overdue this month (${monthsLate(c.latest_status)} late on the Sep 2005 bill)`
                 : 'Credit card account · not overdue this month'
             }
-            actions={
-              c.latest_status !== null && c.latest_status > 0 ? (
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  disabled={message?.phase === 'loading'}
-                  onClick={() => void generate()}
-                >
-                  {message?.phase === 'loading' ? <span className="spinner spinner-sm" aria-hidden="true" /> : null}
-                  Generate message
-                </button>
-              ) : null
-            }
           />
-          {message ? <MessageDraft state={message} email={c.email} onRegenerate={() => void generate()} /> : null}
+          <DoNotContact customer={c} onChange={() => void record.refresh()} />
+          <CollectionsConversation
+            key={`${c.customer_id}-${c.do_not_contact ? 'blocked' : 'open'}`}
+            customerId={c.customer_id}
+            email={c.email}
+            overdue={overdue}
+            blocked={Boolean(c.do_not_contact)}
+          />
           <div className="grid grid-2">
             <section className="card" aria-label="Account details">
               <h2>Account details</h2>
@@ -193,6 +171,8 @@ export function CustomerRecord() {
               </table>
             </div>
           </section>
+
+          <Simulator key={`sim-${c.customer_id}`} customer={c} />
 
           <PolicyGuidance key={c.customer_id} customerId={c.customer_id} />
         </>

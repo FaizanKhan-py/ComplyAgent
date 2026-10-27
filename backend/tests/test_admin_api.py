@@ -26,6 +26,24 @@ ADMIN_ROUTES = [
     ("post", "/api/admin/customers/1/guidance"),
     ("post", "/api/admin/customers/1/recommendation"),
     ("post", "/api/admin/customers/1/message"),
+    ("get", "/api/admin/customers/1/conversation"),
+    ("post", "/api/admin/customers/1/conversation"),
+    ("post", "/api/admin/conversations/1/inbound"),
+    ("post", "/api/admin/conversations/1/redraft"),
+    ("post", "/api/admin/conversations/1/close"),
+    ("post", "/api/admin/messages/1/approve"),
+    ("post", "/api/admin/messages/1/reject"),
+    ("post", "/api/admin/messages/1/send"),
+    ("get", "/api/admin/follow-ups"),
+    ("post", "/api/admin/follow-ups/run-due"),
+    ("post", "/api/admin/follow-ups/1/run"),
+    ("get", "/api/admin/audit"),
+    ("get", "/api/admin/agents/graph"),
+    ("get", "/api/admin/inbox"),
+    ("post", "/api/admin/customers/1/do-not-contact"),
+    ("post", "/api/admin/customers/1/do-not-contact/lift"),
+    ("get", "/api/admin/customers/1/counterfactuals"),
+    ("post", "/api/admin/customers/1/counterfactuals"),
     ("get", "/api/admin/predict/model"),
     ("post", "/api/admin/predict/dataset"),
     ("post", "/api/admin/rag/query"),
@@ -46,7 +64,14 @@ def test_admin_routes_require_the_token(client, method, path):
 
 def test_every_admin_route_is_covered_by_the_auth_test(client):
     routes = {
-        (method.lower(), route.path.replace("{doc_id}", "abc").replace("{customer_id}", "1"))
+        (
+            method.lower(),
+            route.path.replace("{doc_id}", "abc")
+            .replace("{customer_id}", "1")
+            .replace("{conversation_id}", "1")
+            .replace("{message_id}", "1")
+            .replace("{follow_up_id}", "1"),
+        )
         for route in client.app.routes
         if getattr(route, "path", "").startswith("/api/admin")
         for method in route.methods - {"HEAD", "OPTIONS"}

@@ -68,6 +68,8 @@ class Settings:
     login_max_attempts: int = 5  # failed sign-ins per email and client before a lock-out
     login_window_minutes: int = 15
     register_max_per_hour: int = 10  # sign-ups per client
+    # How often the Follow-up Agent runs the follow-ups that are due; 0 runs them only on request.
+    follow_up_interval_minutes: int = 0
 
     def __post_init__(self) -> None:
         if self.chunk_size < 100:
@@ -150,5 +152,6 @@ class Settings:
             login_max_attempts=_int("LOGIN_MAX_ATTEMPTS", 5),
             login_window_minutes=_int("LOGIN_WINDOW_MINUTES", 15),
             register_max_per_hour=_int("REGISTER_MAX_PER_HOUR", 10),
+            follow_up_interval_minutes=_int("FOLLOW_UP_INTERVAL_MINUTES", 0),
             **kwargs,
         )

@@ -65,9 +65,11 @@ class FakeGenerator:
             raise self.error
         return self.reply
 
-    def structured(self, system, user, schema):
+    def structured(self, system, user, schema, history=None):
         """Returns the next of `structured_replies` (dicts), validated against `schema`."""
-        self.structured_calls.append({"system": system, "user": user, "schema": schema})
+        self.structured_calls.append(
+            {"system": system, "user": user, "schema": schema, "history": history}
+        )
         if self.error:
             raise self.error
         return schema.model_validate(self.structured_replies.pop(0))

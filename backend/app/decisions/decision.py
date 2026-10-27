@@ -4,6 +4,9 @@ Python states the facts, the policy knowledge base supplies the rules, and the m
 chooses: one action, channel and priority from fixed lists, with every reason pointing at a
 fact or a policy passage it was given. The reply is then checked here, so a reason that cites
 something that was never provided is caught before anyone sees the recommendation.
+
+In the full pipeline (conversation.py) it also reads the Case Analyst's case file, and the
+Compliance Red Team can challenge its choice: it then decides again, told what was challenged.
 """
 
 from __future__ import annotations
@@ -143,7 +146,7 @@ def policy_passages(kb: KnowledgeBase, customer: dict) -> list[dict]:
     return passages
 
 
-def build_request(facts: list[dict], passages: list[dict]) -> str:
+def build_request(facts: list[dict], passages: list[dict], case_file: str = "") -> str:
     """Everything is escaped, so no fact or passage can close its own tag."""
     fact_lines = "\n".join(
         f'<fact id="{f["id"]}">{html.escape(f["text"], quote=False)}</fact>' for f in facts
@@ -157,8 +160,11 @@ def build_request(facts: list[dict], passages: list[dict]) -> str:
             f"{html.escape(p['text'], quote=False)}\n</source>"
         )
     return (
-        f"<facts>\n{fact_lines}\n</facts>\n\n<sources>\n" + "\n".join(blocks) + "\n</sources>\n\n"
-        "Recommend the next collections action for this account."
+        f"<facts>\n{fact_lines}\n</facts>\n\n"
+        + (f"{case_file}\n\n" if case_file else "")
+        + "<sources>\n"
+        + "\n".join(blocks)
+        + "\n</sources>\n\nRecommend the next collections action for this account."
     )
 
 
@@ -180,9 +186,17 @@ def problems(rec: Recommendation, fact_ids: set[str], source_ids: set[int]) -> l
 
 
 def recommend(
-    kb: KnowledgeBase, portfolio: Portfolio, generator: AnswerGenerator | None, customer_id: int
+    kb: KnowledgeBase,
+    portfolio: Portfolio,
+    generator: AnswerGenerator | None,
+    customer_id: int,
+    case: dict | None = None,
+    challenge: list[str] | None = None,
 ) -> dict | None:
     """The recommendation with the facts and passages it is based on. None: no such customer.
+
+    `case`: the Case Analyst's result (case_analyst.analyse); its facts and case file are then
+    part of the request. `challenge`: the Red Team's objections to an earlier choice.
 
     Raises DecisionUnavailable when no model or no policy evidence is available, and LLMError
     when the model fails.
@@ -190,7 +204,12 @@ def recommend(
     customer = portfolio.get_customer(customer_id)
     if customer is None:
         return None
-    facts = case_facts(customer)
+    case_file = ""
+    if case is not None:
+        from .case_analyst import analysis_block  # case_analyst imports this module
+
+        case_file = analysis_block(case)
+    facts = case["facts"] if case is not None else case_facts(customer)
     result = {"customer_id": customer_id, "facts": facts, "model": None, "corrected": []}
 
     if describe(customer)["months_late"] == 0:
@@ -215,7 +234,13 @@ def recommend(
             "No policy passage matches this account. Upload and index the collections policies.",
         )
 
-    request = build_request(facts, passages)
+    request = build_request(facts, passages, case_file)
+    if challenge:
+        objections = "\n".join(f"- {c}" for c in challenge)
+        request += (
+            "\n\nA compliance reviewer challenged the previous choice for this account:\n"
+            f"{objections}\nDecide again. Keep the same action only if the policies support it."
+        )
     fact_ids = {f["id"] for f in facts}
     source_ids = {p["number"] for p in passages}
     rec = generator.structured(DECISION_PROMPT, request, Recommendation)

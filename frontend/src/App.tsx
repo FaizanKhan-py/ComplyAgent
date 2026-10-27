@@ -6,9 +6,12 @@ import { Layout } from './components/Layout'
 import { ErrorState, Loading } from './components/ui'
 import { AddCustomer } from './pages/AddCustomer'
 import { Assistant } from './pages/Assistant'
+import { AuditTrail } from './pages/AuditTrail'
 import { CustomerRecord } from './pages/CustomerRecord'
 import { Customers } from './pages/Customers'
 import { Documents } from './pages/Documents'
+import { FollowUps } from './pages/FollowUps'
+import { Inbox } from './pages/Inbox'
 import { Login } from './pages/Login'
 import { Playground } from './pages/Playground'
 import { PredictDataset } from './pages/PredictDataset'
@@ -75,6 +78,9 @@ export default function App() {
             <Route path="customers/new" element={<AddCustomer />} />
             <Route path="customers/:customerId" element={<CustomerRecord />} />
             <Route path="predict" element={<PredictDataset />} />
+            <Route path="approvals" element={<Inbox />} />
+            <Route path="follow-ups" element={<FollowUps />} />
+            <Route path="audit" element={<AuditTrail />} />
           </>
         ) : null}
         <Route path="assistant" element={<Assistant showAdminTabs={isAdmin} />}>

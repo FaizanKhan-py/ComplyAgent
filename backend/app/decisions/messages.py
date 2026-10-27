@@ -87,10 +87,14 @@ def message_queries(customer: dict) -> list[str]:
     ]
 
 
-def message_passages(kb: KnowledgeBase, customer: dict) -> list[dict]:
+def message_passages(
+    kb: KnowledgeBase, customer: dict, extra_queries: tuple[str, ...] = ()
+) -> list[dict]:
+    """The writer's policy passages, numbered from 1. `extra_queries` come first: for a reply,
+    the customer's own email, so a hardship report finds the hardship policy."""
     seen: set[tuple[str, int]] = set()
     passages = []
-    for query in message_queries(customer):
+    for query in [*extra_queries, *message_queries(customer)]:
         for chunk in kb.search(query, PASSAGES_PER_QUESTION):
             key = (chunk["document_id"], chunk["chunk_index"])
             if key in seen:
@@ -159,6 +163,30 @@ def fill(text: str, values: dict[str, str]) -> str:
     return text
 
 
+# Wording a risk level's tone rule may require. Only the phrases the policy's rule actually
+# contains are required, so a policy change changes the check.
+RULE_PHRASES = ("immediate attention", "payment plan", "passed to a collections officer")
+
+
+def required_phrases(rule_text: str | None, deadline: str | None) -> list[str]:
+    """The words the email must use because the risk level's rule says them (none for an
+    escalated account, whose deadline does not apply either)."""
+    if not rule_text or not deadline:
+        return []
+    return [p for p in RULE_PHRASES if p in rule_text.lower()]
+
+
+def risk_rule_text(passages: list[dict], risk_level: str | None) -> str | None:
+    """The words of this risk level's tone rule, as the policy states them."""
+    if not risk_level:
+        return None
+    for p in passages:
+        for block in p["text"].split("\n\n"):
+            if f"{risk_level}-risk customer" in block:
+                return block.strip()
+    return None
+
+
 def risk_rule(passages: list[dict], risk_level: str | None) -> tuple[int | None, str | None]:
     """The passage holding this risk level's tone rule, and the deadline the rule sets
     ("within 7 days"), read from the policy text so a policy change changes the check."""
@@ -173,14 +201,24 @@ def risk_rule(passages: list[dict], risk_level: str | None) -> tuple[int | None,
 
 
 def problems(
-    draft: MessageDraft, values: dict, source_ids: set[int], deadline: str | None = None
+    draft: MessageDraft,
+    values: dict,
+    source_ids: set[int],
+    deadline: str | None = None,
+    required: tuple[str, ...] = PLACEHOLDERS,
+    phrases: list[str] | tuple[str, ...] = (),
 ) -> list[str]:
-    """Guardrail breaks, worded so the model can fix them when asked again."""
+    """Guardrail breaks, worded so the model can fix them when asked again. `required`: the
+    placeholders the body must use (a reply in a conversation needs fewer than a first email).
+    `phrases`: words the risk level's rule requires (required_phrases)."""
     found = []
     if deadline and deadline.lower() not in draft.body.lower():
         found.append(
             f'the policy for this risk level asks the customer to act "{deadline}"; say so'
         )
+    for phrase in phrases:
+        if phrase not in draft.body.lower():
+            found.append(f'the policy for this risk level requires the words "{phrase}"; use them')
     text = f"{draft.subject}\n{draft.body}"
     unknown = sorted(set(re.findall(r"\{(\w+)\}", text)) - set(PLACEHOLDERS))
     if unknown:
@@ -190,9 +228,15 @@ def problems(
     written = {m.group(0) for m in re.finditer(r"\b\d+ months?\b", draft.body)}
     if written - {months}:
         found.append(f"the account is {months} overdue; write it as {{months_overdue}}")
+    # {months_overdue} already reads "2 months": "{months_overdue} month(s)" would say it twice.
+    if re.search(r"\{months_overdue\}\s*months?\b|\bmonths?\s*\(s\)", draft.body, re.IGNORECASE):
+        found.append(
+            f'{{months_overdue}} already reads "{months}": write it alone, never followed by '
+            '"month" or "month(s)"'
+        )
     missing = [
         p
-        for p in PLACEHOLDERS
+        for p in required
         if "{" + p + "}" not in draft.body and not (p == "months_overdue" and months in written)
     ]
     if missing:
@@ -222,13 +266,84 @@ def problems(
     return found
 
 
-def generate_message(
-    kb: KnowledgeBase, portfolio: Portfolio, generator: AnswerGenerator | None, customer_id: int
-) -> dict | None:
-    """A checked email draft, or the reason none was written. None: no such customer.
+def edited_problems(subject: str, body: str, values: dict[str, str]) -> list[str]:
+    """The guardrails that still apply to an email an officer edited by hand, where the amounts
+    and links are already written out."""
+    found = []
+    text = f"{subject}\n{body}"
+    if not subject.strip() or not body.strip():
+        found.append("an email needs a subject and a body")
+    if ORGANISATION not in body:
+        found.append(f'the body must name the organisation, "{ORGANISATION}"')
+    if values["reference"] not in body:
+        found.append(f"the body must give the reference, {values['reference']}")
+    links = set(re.findall(r"https?://\S+|www\.\S+", text))
+    if any(link.rstrip(".,)") != values["payment_link"] for link in links):
+        found.append(f"the only link allowed is the payment link, {values['payment_link']}")
+    if banned := sorted({m.group(0).lower() for m in FORBIDDEN.finditer(text)}):
+        found.append(f"remove these words: {', '.join(banned)}")
+    caps = [w for w in re.findall(r"\b[A-Z]{2,}\b", text) if w not in ALLOWED_CAPS]
+    if caps:
+        found.append(f"no words in capitals: {', '.join(sorted(set(caps)))}")
+    if text.count("!") > 1:
+        found.append("use at most one exclamation mark")
+    if re.search(r"\bdebt\b", subject, re.IGNORECASE):
+        found.append('the subject must not contain the word "debt"')
+    if len(body.split()) > EMAIL_MAX_WORDS:
+        found.append(f"the email body is {len(body.split())} words; the limit is {EMAIL_MAX_WORDS}")
+    return found
 
-    Raises DecisionUnavailable when no decision or draft can be made, and LLMError when the
-    model fails.
+
+def email_values(customer: dict) -> dict[str, str]:
+    """What Python writes into the placeholders, from the record."""
+    facts = describe(customer)
+    reference = f"CA-{customer['customer_id']:06d}"
+    return {
+        "amount_due": _money(facts["latest_bill"] or 0),
+        "months_overdue": f"{facts['months_late']} month{'s' if facts['months_late'] != 1 else ''}",
+        "payment_link": PAYMENT_URL.format(reference=reference),
+        "support_phone": SUPPORT_PHONE,
+        "reference": reference,
+    }
+
+
+def writer_facts(customer: dict) -> list[dict]:
+    """The facts a writer sees: the email must never mention the risk score, so it is left out."""
+    return [f for f in case_facts(customer) if "risk model" not in f["text"]]
+
+
+def deadline_for(rec, level_deadline: str | None) -> str | None:
+    """An escalated account has already been passed on, so the level's deadline does not apply."""
+    return None if rec.action == Action.escalate_to_human else level_deadline
+
+
+def checks(values: dict, body: str, deadline: str | None) -> list[str]:
+    return [
+        f"Names {ORGANISATION}, the amount (NT${values['amount_due']}) and the reference",
+        "Amounts and links come from the record, not from the model",
+        "No threats, capitals, risk level or score, or mention of automation",
+        f"{len(body.split())} of {EMAIL_MAX_WORDS} words; the subject has no amount",
+        *(
+            [f'Asks the customer to act "{deadline}", as the policy sets for this risk level']
+            if deadline
+            else []
+        ),
+    ]
+
+
+def prepare(
+    kb: KnowledgeBase,
+    portfolio: Portfolio,
+    generator: AnswerGenerator | None,
+    customer_id: int,
+    case: dict | None = None,
+) -> tuple[dict, dict | None] | None:
+    """Everything a first email needs, before it is written. None: no such customer.
+
+    Returns (result, context). When context is None, result is final: no email is written, and
+    result says why. Otherwise context holds the customer, the decision, the passages, the
+    placeholder values and the risk level's deadline, and result is the shared part of the reply.
+    `case`: the Case Analyst's result, passed on to the Decision Agent.
     """
     customer = portfolio.get_customer(customer_id)
     if customer is None:
@@ -246,27 +361,21 @@ def generate_message(
         "model": None,
     }
     if facts["months_late"] == 0:
-        return {**base, "status": "not_written", "reason": "The customer is not overdue."}
+        return {**base, "status": "not_written", "reason": "The customer is not overdue."}, None
     bill = facts["latest_bill"]
     if bill is None or bill <= 0:
-        return {
-            **base,
-            "status": "not_written",
-            "reason": (
-                f"The latest bill shows nothing owed (NT${_money(bill or 0)}), so there is no "
-                "amount to ask for. A collections officer should check this account."
-            ),
-        }
+        reason = (
+            f"The latest bill shows nothing owed (NT${_money(bill or 0)}), so there is no "
+            "amount to ask for. A collections officer should check this account."
+        )
+        return {**base, "status": "not_written", "reason": reason}, None
 
-    decision = recommend(kb, portfolio, generator, customer_id)
+    decision = recommend(kb, portfolio, generator, customer_id, case=case)
     rec = decision["recommendation"]
     result = {**base, "decision": rec, "model": decision["model"]}
     if rec.action not in ACTION_BRIEF:
-        return {
-            **result,
-            "status": "not_written",
-            "reason": "The Decision Agent recommends no contact.",
-        }
+        reason = "The Decision Agent recommends no contact."
+        return {**result, "status": "not_written", "reason": reason}, None
 
     passages = message_passages(kb, customer)
     if not passages:
@@ -274,21 +383,39 @@ def generate_message(
             "no_policy_evidence",
             "No messaging policy matches this account. Upload and index the messaging policy.",
         )
-    reference = f"CA-{customer_id:06d}"
-    values = {
-        "amount_due": _money(bill),
-        "months_overdue": f"{facts['months_late']} month{'s' if facts['months_late'] != 1 else ''}",
-        "payment_link": PAYMENT_URL.format(reference=reference),
-        "support_phone": SUPPORT_PHONE,
-        "reference": reference,
+    _, level_deadline = risk_rule(passages, customer.get("risk_level"))
+    return result, {
+        "customer": customer,
+        "decision": decision,
+        "passages": passages,
+        "values": email_values(customer),
+        "facts": writer_facts(customer),
+        "level_deadline": level_deadline,
     }
-    # The email must never mention the risk score, so the writer is not given it.
-    message_facts = [f for f in case_facts(customer) if "risk model" not in f["text"]]
-    # An escalated account has already been passed on, so the level's deadline does not apply.
-    _, deadline = risk_rule(passages, customer.get("risk_level"))
-    if rec.action == Action.escalate_to_human:
-        deadline = None
-    request = build_request(decision, message_facts, passages, customer.get("risk_level"), deadline)
+
+
+def generate_message(
+    kb: KnowledgeBase, portfolio: Portfolio, generator: AnswerGenerator | None, customer_id: int
+) -> dict | None:
+    """A checked email draft, or the reason none was written. None: no such customer.
+
+    Only the fixed guardrails check it; the full pipeline (conversation.py) adds the Case
+    Analyst, the Red Team and an officer's approval.
+
+    Raises DecisionUnavailable when no decision or draft can be made, and LLMError when the
+    model fails.
+    """
+    prepared = prepare(kb, portfolio, generator, customer_id)
+    if prepared is None:
+        return None
+    result, context = prepared
+    if context is None:
+        return result
+    decision, passages, values = context["decision"], context["passages"], context["values"]
+    rec = decision["recommendation"]
+    deadline = deadline_for(rec, context["level_deadline"])
+    risk_level = context["customer"].get("risk_level")
+    request = build_request(decision, context["facts"], passages, risk_level, deadline)
     source_ids = {p["number"] for p in passages}
 
     # Each retry is told exactly what was wrong. Still wrong after that: nobody sees it.
@@ -317,16 +444,6 @@ def generate_message(
         "subject": fill(draft.subject, values),
         "body": body,
         "sources": [p for p in passages if p["number"] in set(draft.source_ids)] or passages,
-        "checks": [
-            f"Names {ORGANISATION}, the amount (NT${values['amount_due']}) and the reference",
-            "Amounts and links come from the record, not from the model",
-            "No threats, capitals, risk level or score, or mention of automation",
-            f"{len(body.split())} of {EMAIL_MAX_WORDS} words; the subject has no amount",
-            *(
-                [f'Asks the customer to act "{deadline}", as the policy sets for this risk level']
-                if deadline
-                else []
-            ),
-        ],
+        "checks": checks(values, body, deadline),
         "corrected": corrected,
     }
