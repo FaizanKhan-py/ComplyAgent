@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -108,6 +109,9 @@ class User(BaseModel):
     email: str
     full_name: str
     role: Literal["user", "admin"]
+    supervisor: bool = Field(
+        default=False, description="A team lead: gives the second approval payment plans need."
+    )
     created_at: str
     last_login_at: str | None = None
 
@@ -143,6 +147,9 @@ class AdminConfig(BaseModel):
     llm_model: str | None
     default_top_k: int
     default_min_score: float
+    email_provider: Literal["none", "graph"] = "none"
+    email_redirect_to: str | None = None
+    contact_rules: str = Field(default="", description="The contact rules sends must follow.")
 
 
 class ChatMessage(BaseModel):
@@ -500,7 +507,14 @@ class DraftReview(BaseModel):
 
 ConversationStatus = Literal["open", "escalated", "closed"]
 MessageStatus = Literal[
-    "pending_approval", "blocked", "approved", "rejected", "superseded", "sent", "received"
+    "pending_approval",
+    "awaiting_supervisor",
+    "blocked",
+    "approved",
+    "rejected",
+    "superseded",
+    "sent",
+    "received",
 ]
 
 
@@ -520,6 +534,12 @@ class ConversationMessage(BaseModel):
     sent_by: str | None
     sent_at: str | None
     created_at: str
+    needs_supervisor: bool = Field(
+        default=False, description="Four eyes: a team lead must give the second approval."
+    )
+    first_approved_by: str | None = None
+    first_approved_at: str | None = None
+    delivered: bool = Field(default=False, description="Really emailed (Microsoft Graph).")
 
 
 class Conversation(BaseModel):
@@ -639,6 +659,9 @@ class Simulation(BaseModel):
     model_name: str | None
     threshold: float
     base: SimulatedOutcome
+    personal_inputs: list[str] = Field(
+        default=[], description="Personal attributes the model uses (age, sex, education)."
+    )
     scenarios: list[Scenario]
     custom: CustomScenario | None
 
@@ -663,7 +686,7 @@ class InboxDraft(BaseModel):
     id: int
     conversation_id: int
     customer_id: int
-    status: Literal["pending_approval", "blocked", "approved"]
+    status: Literal["pending_approval", "awaiting_supervisor", "blocked", "approved"]
     subject: str | None
     body: str
     created_at: str
@@ -682,6 +705,76 @@ class Inbox(BaseModel):
     due_follow_ups: list[FollowUp]
     calls: list[FollowUp] = Field(description="Follow-ups that asked an officer to call.")
     total: int
+
+
+# --- the collections ledger -----------------------------------------------------------------
+
+
+class Payment(BaseModel):
+    id: int
+    customer_id: int
+    amount: int
+    paid_on: str
+    recorded_by: str
+    note: str | None
+    created_at: str
+
+
+class Promise(BaseModel):
+    id: int
+    customer_id: int
+    conversation_id: int | None
+    amount: int | None
+    due_on: str
+    status: Literal["open", "kept", "broken", "cancelled"]
+    recorded_by: str
+    created_at: str
+    resolved_at: str | None
+    outcome: str | None
+
+
+class Contact(BaseModel):
+    id: int
+    customer_id: int
+    conversation_id: int | None
+    channel: Literal["email", "phone", "sms"]
+    outcome: Literal["sent", "reached", "no_answer", "voicemail"]
+    made_by: str
+    note: str | None
+    made_at: str
+
+
+class LedgerView(BaseModel):
+    payments: list[Payment]
+    promises: list[Promise]
+    contacts: list[Contact]
+    paid_total: int
+    contact_rules: str
+    contact_now: list[str] = Field(description="Why a contact attempt is not allowed right now.")
+
+
+class PaymentRequest(BaseModel):
+    amount: int = Field(gt=0, le=10_000_000)
+    paid_on: date
+    note: str | None = Field(default=None, max_length=500)
+
+
+class PromiseRequest(BaseModel):
+    due_on: date
+    amount: int | None = Field(default=None, gt=0, le=10_000_000)
+
+
+class ContactRequest(BaseModel):
+    channel: Literal["phone", "sms"] = "phone"
+    outcome: Literal["reached", "no_answer", "voicemail"]
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class MailboxPoll(BaseModel):
+    fetched: int
+    matched: list[int] = Field(description="Conversations that received a reply.")
+    unmatched: int = Field(description="Emails left unread for a person.")
+    failed: list[dict]
 
 
 Conversation.model_rebuild()  # it refers to FollowUp, defined after it

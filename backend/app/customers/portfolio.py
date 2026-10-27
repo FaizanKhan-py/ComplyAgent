@@ -419,6 +419,21 @@ class Portfolio:
             {**dict(h), "month": MONTHS.get(h["month_no"], f"Month {h['month_no']}")}
             for h in history
         ]
+        # The ledger (ledger.py): what was paid after the data ends, and an open promise.
+        with self.db.connect() as conn:
+            paid = conn.execute(
+                "SELECT COALESCE(SUM(amount), 0) AS total, MAX(paid_on) AS latest FROM payments"
+                " WHERE customer_id = ?",
+                (customer_id,),
+            ).fetchone()
+            promise = conn.execute(
+                "SELECT amount, due_on FROM promises WHERE customer_id = ? AND status = 'open'"
+                " ORDER BY id DESC LIMIT 1",
+                (customer_id,),
+            ).fetchone()
+        customer["recorded_paid"] = int(paid["total"])
+        customer["last_payment_on"] = paid["latest"]
+        customer["open_promise"] = dict(promise) if promise else None
         return customer
 
     @staticmethod

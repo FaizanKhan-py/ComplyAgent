@@ -27,6 +27,20 @@ def settings(tmp_path) -> Settings:
     )
 
 
+@pytest.fixture(autouse=True)
+def office_hours(monkeypatch):
+    """Every test runs at 10:00 customer time on a working day, inside the contact hours, so
+    the contact rules only refuse what a test makes them refuse."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.decisions import contact_rules
+
+    taipei = timezone(timedelta(hours=8))
+    fixed = datetime.now(taipei).replace(hour=10, minute=0, second=0, microsecond=0)
+    monkeypatch.setattr(contact_rules, "now", lambda: fixed.astimezone(timezone.utc))
+    return fixed
+
+
 @pytest.fixture
 def generator() -> FakeGenerator:
     return FakeGenerator()

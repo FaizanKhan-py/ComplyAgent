@@ -547,6 +547,72 @@ describe('Customer Records', () => {
     })
   })
 
+  const ledger = (overrides = {}) => ({
+    payments: [],
+    promises: [],
+    contacts: [],
+    paid_total: 0,
+    contact_rules: 'Contact only between 08:00 and 21:00 customer time (customer_contact_policy.md).',
+    contact_now: [] as string[],
+    ...overrides,
+  })
+
+  it('records a payment in the ledger and shows the contact rules', async () => {
+    const user = userEvent.setup()
+    const api = mockApi({
+      'GET /api/admin/customers/7': () => ({ body: customerDetail }),
+      'GET /api/admin/customers/7/conversation': () => ({ body: null }),
+      'GET /api/admin/customers/7/ledger': () => ({
+        body: ledger({ contact_now: ['it is 22:00 for the customer; contact is only allowed between 08:00 and 21:00'] }),
+      }),
+      'POST /api/admin/customers/7/payments': () => ({
+        body: ledger({
+          paid_total: 1500,
+          payments: [
+            { id: 1, customer_id: 7, amount: 1500, paid_on: '2026-10-27', recorded_by: 'officer@example.com', note: null, created_at: '2026-10-27T10:00:00+00:00' },
+          ],
+          promises: [
+            { id: 2, customer_id: 7, conversation_id: 3, amount: 1500, due_on: '2026-10-30', status: 'kept', recorded_by: 'Communication Agent', created_at: '2026-10-26T10:00:00+00:00', resolved_at: '2026-10-27T10:00:00+00:00', outcome: 'Kept: NT$1,500 paid by 2026-10-30.' },
+          ],
+        }),
+      }),
+    })
+    record('/customers/7')
+    const card = within(await screen.findByRole('region', { name: 'Collections ledger' }))
+    expect(card.getByText(/Do not contact right now:/)).toBeInTheDocument()
+    expect(card.getByText(/it is 22:00 for the customer/)).toBeInTheDocument()
+
+    await user.click(card.getByRole('button', { name: 'Record a payment' }))
+    await user.type(card.getByLabelText('Amount paid (NT$)'), '1,500')
+    await user.click(card.getByRole('button', { name: 'Save' }))
+    expect(await card.findByText(/Kept: NT\$1,500 paid by 2026-10-30./)).toBeInTheDocument()
+    const sent = JSON.parse(String(api.calls.find((c) => c.key.endsWith('/payments'))!.init.body))
+    expect(sent.amount).toBe(1500)
+    expect(sent.paid_on).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+  })
+
+  it('asks a team lead for the second approval of a payment plan', async () => {
+    const waiting = outbound({
+      status: 'awaiting_supervisor',
+      needs_supervisor: true,
+      first_approved_by: 'officer@example.com',
+      first_approved_at: '2026-10-27T10:05:00+00:00',
+    })
+    mockApi({
+      'GET /api/admin/customers/7': () => ({ body: customerDetail }),
+      'GET /api/admin/customers/7/conversation': () => ({ body: conversation([waiting]) }),
+      'GET /api/admin/customers/7/ledger': () => ({ body: ledger() }),
+    })
+    record('/customers/7')
+    const card = within(await screen.findByRole('region', { name: 'Collections conversation' }))
+    expect(await card.findByText('Waiting for a team lead')).toBeInTheDocument()
+    expect(card.getByText('Needs a team lead (four eyes)')).toBeInTheDocument()
+    expect(card.getByText(/First approved by officer@example.com/)).toBeInTheDocument()
+    // Not signed in as a team lead here: the second approval is not available.
+    expect(card.getByRole('button', { name: 'Approve as team lead' })).toBeDisabled()
+    expect(card.queryByRole('button', { name: 'Send email' })).not.toBeInTheDocument()
+  })
+
   it('shows why a conversation could not start', async () => {
     const user = userEvent.setup()
     mockApi({
@@ -1043,6 +1109,7 @@ describe('Follow-ups', () => {
 describe('Approvals', () => {
   it('lists every draft, hand-over and call that waits for an officer', async () => {
     mockApi({
+      'GET /api/admin/config': () => ({ body: { ...config, email_provider: 'none' } }),
       'GET /api/admin/inbox': () => ({
         body: {
           drafts: [
@@ -1065,6 +1132,7 @@ describe('Approvals', () => {
     })
     page(<Inbox />)
     expect(await screen.findByText('Blocked by the Red Team')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Check the mailbox' })).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Customer 7' })).toHaveAttribute('href', '/customers/7')
     expect(screen.getByText(/The customer disputes the debt./)).toBeInTheDocument()
     expect(within(screen.getByRole('region', { name: 'Calls to make' })).getByText('Nothing here.')).toBeInTheDocument()
@@ -1072,9 +1140,26 @@ describe('Approvals', () => {
 
   it('says when nothing is waiting', async () => {
     mockApi({
+      'GET /api/admin/config': () => ({ body: config }),
       'GET /api/admin/inbox': () => ({ body: { drafts: [], escalated: [], due_follow_ups: [], calls: [], total: 0 } }),
     })
     page(<Inbox />)
     expect(await screen.findByText('All clear')).toBeInTheDocument()
+  })
+
+  it('checks the Microsoft 365 mailbox for replies when email is connected', async () => {
+    const user = userEvent.setup()
+    const api = mockApi({
+      'GET /api/admin/config': () => ({
+        body: { ...config, email_provider: 'graph', email_redirect_to: 'tester@example.com' },
+      }),
+      'GET /api/admin/inbox': () => ({ body: { drafts: [], escalated: [], due_follow_ups: [], calls: [], total: 0 } }),
+      'POST /api/admin/email/poll': () => ({ body: { fetched: 3, matched: [4, 5], unmatched: 1, failed: [] } }),
+    })
+    page(<Inbox />)
+    expect(await screen.findByText(/Test mode: every email goes to tester@example.com/)).toBeInTheDocument()
+    await user.click(await screen.findByRole('button', { name: 'Check the mailbox' }))
+    expect(await screen.findByText(/3 new email\(s\): 2 added to their conversations, 1 left unread/)).toBeInTheDocument()
+    expect(api.count('POST /api/admin/email/poll')).toBe(1)
   })
 })

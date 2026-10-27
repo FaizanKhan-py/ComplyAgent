@@ -65,6 +65,12 @@ export interface AdminConfig {
   llm_model: string | null
   default_top_k: number
   default_min_score: number
+  /** graph: emails really go out through Microsoft 365, and replies come in. */
+  email_provider?: 'none' | 'graph'
+  /** Outside production, every email goes to this address instead of the customer. */
+  email_redirect_to?: string | null
+  /** The contact rules every send must follow. */
+  contact_rules?: string
 }
 
 export interface ChatMessage {
@@ -122,6 +128,8 @@ export interface User {
   email: string
   full_name: string
   role: Role
+  /** A team lead: gives the second approval that payment-plan emails need. */
+  supervisor?: boolean
   created_at: string
   last_login_at: string | null
 }
@@ -450,6 +458,7 @@ export interface DraftReview {
 
 export type MessageStatus =
   | 'pending_approval'
+  | 'awaiting_supervisor'
   | 'blocked'
   | 'approved'
   | 'rejected'
@@ -475,6 +484,12 @@ export interface ConversationMessage {
   sent_by: string | null
   sent_at: string | null
   created_at: string
+  /** Four eyes: a team lead must give the second approval. */
+  needs_supervisor?: boolean
+  first_approved_by?: string | null
+  first_approved_at?: string | null
+  /** Really emailed through Microsoft 365. */
+  delivered?: boolean
 }
 
 export interface Conversation {
@@ -567,6 +582,8 @@ export interface Simulation {
   model_name: string | null
   threshold: number
   base: SimulatedOutcome
+  /** Personal attributes the model uses (age, sex, education). */
+  personal_inputs?: string[]
   scenarios: Scenario[]
   custom: CustomScenario | null
 }
@@ -585,7 +602,7 @@ export interface InboxDraft {
   id: number
   conversation_id: number
   customer_id: number
-  status: 'pending_approval' | 'blocked' | 'approved'
+  status: 'pending_approval' | 'awaiting_supervisor' | 'blocked' | 'approved'
   subject: string | null
   body: string
   created_at: string
@@ -598,4 +615,58 @@ export interface Inbox {
   /** Follow-ups that asked an officer to call. */
   calls: FollowUp[]
   total: number
+}
+
+// --- Collections ledger -----------------------------------------------------------------------
+
+export interface Payment {
+  id: number
+  customer_id: number
+  amount: number
+  paid_on: string
+  recorded_by: string
+  note: string | null
+  created_at: string
+}
+
+export interface PromiseToPay {
+  id: number
+  customer_id: number
+  conversation_id: number | null
+  /** null: any payment keeps it. */
+  amount: number | null
+  due_on: string
+  status: 'open' | 'kept' | 'broken' | 'cancelled'
+  recorded_by: string
+  created_at: string
+  resolved_at: string | null
+  outcome: string | null
+}
+
+export interface ContactAttempt {
+  id: number
+  customer_id: number
+  conversation_id: number | null
+  channel: 'email' | 'phone' | 'sms'
+  outcome: 'sent' | 'reached' | 'no_answer' | 'voicemail'
+  made_by: string
+  note: string | null
+  made_at: string
+}
+
+export interface Ledger {
+  payments: Payment[]
+  promises: PromiseToPay[]
+  contacts: ContactAttempt[]
+  paid_total: number
+  contact_rules: string
+  /** Why a contact attempt is not allowed right now; empty when it is. */
+  contact_now: string[]
+}
+
+export interface MailboxPoll {
+  fetched: number
+  matched: number[]
+  unmatched: number
+  failed: { conversation_id: number; error: string }[]
 }

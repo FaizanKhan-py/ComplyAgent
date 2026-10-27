@@ -34,10 +34,11 @@ from .core import auth, schemas
 from .core.config import BACKEND_DIR, SUPPORTED_EXTENSIONS, Settings
 from .core.db import Database, EmailTaken, now_iso
 from .customers.portfolio import SORT_COLUMNS, CustomerExists, Portfolio
-from .decisions import conversation, follow_up
+from .decisions import contact_rules, conversation, follow_up
 from .decisions.decision import DecisionUnavailable, recommend
 from .decisions.guidance import customer_guidance
 from .decisions.messages import generate_message
+from .integrations.mail import build_mailer
 from .langchain.agents import AssistantAgent
 from .langchain.llm import AnswerGenerator, LLMError, build_generator
 from .langchain.models import classify_error
@@ -75,8 +76,10 @@ def create_app(
     settings: Settings | None = None,
     embedder: Embedder | None = None,
     generator: AnswerGenerator | None | object = _UNSET,
+    mailer=None,
 ) -> FastAPI:
-    """`embedder` and `generator` can be injected so tests run without models or API keys."""
+    """`embedder`, `generator` and `mailer` can be injected so tests run without models, API
+    keys or a mailbox."""
     if settings is None:
         load_dotenv(BACKEND_DIR / ".env")
         settings = Settings.from_env()
@@ -86,6 +89,7 @@ def create_app(
     kb = KnowledgeBase(settings, Database(settings.db_path), embedder, generator)
     portfolio = Portfolio(kb.db)
     predictor = Predictor(settings.risk_model_dir)
+    mailer = mailer or build_mailer(settings)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -108,6 +112,12 @@ def create_app(
         if hasattr(embedder, "_load"):
             threading.Thread(target=_warm, args=(embedder,), daemon=True).start()
         stop = threading.Event()
+        if settings.email_poll_minutes > 0 and mailer.provider != "none":
+            threading.Thread(
+                target=_mailbox_poller,
+                args=(stop, settings.email_poll_minutes * 60, kb, portfolio, mailer),
+                daemon=True,
+            ).start()
         if settings.follow_up_interval_minutes > 0:
             threading.Thread(
                 target=_follow_up_scheduler,
@@ -155,7 +165,13 @@ def create_app(
 
     limiter = auth.RateLimiter()
     login_window = settings.login_window_minutes * 60
-    service_account = {"id": 0, "email": "", "full_name": "API token", "role": "admin"}
+    service_account = {
+        "id": 0,
+        "email": "",
+        "full_name": "API token",
+        "role": "admin",
+        "supervisor": False,
+    }
 
     def _unauthorized(message: str = "Sign in to continue.") -> HTTPException:
         return HTTPException(
@@ -381,6 +397,9 @@ def create_app(
                 if settings.rag_min_score is not None
                 else embedder.default_min_score
             ),
+            "email_provider": mailer.provider,
+            "email_redirect_to": mailer.redirect_to,
+            "contact_rules": contact_rules.load(settings, kb).describe(),
         }
 
     # --- admin: documents ------------------------------------------------------------------
@@ -747,9 +766,109 @@ def create_app(
     def send_message(message_id: int, user: dict = admin):
         """Marks an approved email as sent (email delivery is not connected yet); the Follow-up
         Agent then plans what happens if the customer does not reply."""
-        sent = _conversation(conversation.send, portfolio, conversations, message_id, user)
+        rules = contact_rules.load(settings, kb)
+        sent = _conversation(
+            conversation.send, portfolio, conversations, message_id, user, rules, mailer
+        )
         follow_up.plan(kb, portfolio, kb.generator, conversations, sent["id"])
         return conversations.get(sent["id"])
+
+    @app.post("/api/admin/email/poll", response_model=schemas.MailboxPoll, **conv)
+    def poll_email():
+        """Reads the collections mailbox: replies are matched to their conversations and
+        answered by the Communication Agent, like a pasted reply."""
+        return _conversation(
+            conversation.poll_mailbox, kb, portfolio, kb.generator, conversations, mailer
+        )
+
+    # --- admin: the collections ledger -----------------------------------------------------
+
+    def _ledger(customer_id: int) -> dict:
+        rules = contact_rules.load(settings, kb)
+        return {
+            **conversations.ledger.summary(customer_id),
+            "contact_rules": rules.describe(),
+            "contact_now": contact_rules.problems(rules, kb.db, customer_id),
+        }
+
+    @app.get("/api/admin/customers/{customer_id}/ledger", response_model=schemas.LedgerView, **conv)
+    def ledger(customer_id: int):
+        """Payments, promises to pay and contact attempts since the records."""
+        get_customer(customer_id)
+        return _ledger(customer_id)
+
+    @app.post(
+        "/api/admin/customers/{customer_id}/payments", response_model=schemas.LedgerView, **conv
+    )
+    def record_payment(customer_id: int, body: schemas.PaymentRequest, user: dict = admin):
+        """Records a payment. It lowers what the emails ask for and can keep a promise; paid in
+        full, the scheduled follow-ups are cancelled."""
+        get_customer(customer_id)
+        who = conversation.actor(user)
+        payment = conversations.ledger.record_payment(
+            customer_id, body.amount, body.paid_on, who, body.note
+        )
+        conversations.audit.record(
+            who, "ledger.payment", f"Payment of NT${body.amount:,} on {body.paid_on} recorded.",
+            customer_id=customer_id, detail=payment,
+        )  # fmt: skip
+        settled = conversations.ledger.check_promise(customer_id, body.paid_on)
+        if settled:
+            conversations.audit.record(
+                who, f"ledger.promise_{settled['status']}", settled["outcome"],
+                customer_id=customer_id, detail=settled,
+            )  # fmt: skip
+        customer = get_customer(customer_id)
+        latest = conversations.latest_for(customer_id)
+        if customer["latest_bill"] and customer["recorded_paid"] >= customer["latest_bill"]:
+            if latest and latest["status"] != "closed":
+                if conversations.cancel_follow_ups(latest["id"], "Paid in full."):
+                    conversations.audit.record(
+                        who, "follow_up.cancelled", "Paid in full: the follow-ups were cancelled.",
+                        customer_id=customer_id, conversation_id=latest["id"],
+                    )  # fmt: skip
+        return _ledger(customer_id)
+
+    @app.post(
+        "/api/admin/customers/{customer_id}/promises", response_model=schemas.LedgerView, **conv
+    )
+    def record_promise(customer_id: int, body: schemas.PromiseRequest, user: dict = admin):
+        """Records a promise to pay, e.g. one made on the phone."""
+        get_customer(customer_id)
+        latest = conversations.latest_for(customer_id)
+        open_id = latest["id"] if latest and latest["status"] != "closed" else None
+        who = conversation.actor(user)
+        promise = conversations.ledger.record_promise(
+            customer_id, body.due_on, who, body.amount, open_id
+        )
+        conversations.audit.record(
+            who, "ledger.promise", f"Promise to pay by {body.due_on} recorded.",
+            customer_id=customer_id, conversation_id=open_id, detail=promise,
+        )  # fmt: skip
+        return _ledger(customer_id)
+
+    @app.post(
+        "/api/admin/customers/{customer_id}/contacts", response_model=schemas.LedgerView, **conv
+    )
+    def record_contact(customer_id: int, body: schemas.ContactRequest, user: dict = admin):
+        """Logs a call (or text) to the customer. It counts toward the contact limit, and a
+        live conversation starts the quiet period."""
+        get_customer(customer_id)
+        rules = contact_rules.load(settings, kb)
+        broken = contact_rules.problems(rules, kb.db, customer_id)
+        latest = conversations.latest_for(customer_id)
+        open_id = latest["id"] if latest and latest["status"] != "closed" else None
+        who = conversation.actor(user)
+        contact = conversations.ledger.record_contact(
+            customer_id, body.channel, body.outcome, who, open_id, body.note
+        )
+        conversations.audit.record(
+            who, "contact.logged",
+            f"{body.channel.capitalize()} contact logged: {body.outcome.replace('_', ' ')}."
+            + (f" It broke the contact rules: {'; '.join(broken)}." if broken else ""),
+            customer_id=customer_id, conversation_id=open_id, detail=contact,
+        )  # fmt: skip
+        return _ledger(customer_id)
 
     @app.post(
         "/api/admin/customers/{customer_id}/do-not-contact",
@@ -1052,6 +1171,20 @@ def _warm(embedder) -> None:
         embedder._load()
     except EmbeddingError:
         pass  # already logged; surfaced through /api/admin/health
+
+
+def _mailbox_poller(stop: threading.Event, seconds: int, kb, portfolio, mailer) -> None:
+    """Reads the mailbox every `seconds` (EMAIL_POLL_MINUTES) until shutdown."""
+    store = conversation.Conversations(kb.db)
+    while not stop.wait(seconds):
+        try:
+            result = conversation.poll_mailbox(kb, portfolio, kb.generator, store, mailer)
+            if result["fetched"]:
+                logger.info(
+                    "Mailbox: %d new, %d matched", result["fetched"], len(result["matched"])
+                )
+        except Exception:  # keep polling; the next run tries again
+            logger.exception("Reading the mailbox failed")
 
 
 def _follow_up_scheduler(stop: threading.Event, seconds: int, kb, portfolio) -> None:

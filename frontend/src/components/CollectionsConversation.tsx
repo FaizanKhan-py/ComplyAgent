@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import { api } from '../api/client'
+import { useCurrentUser } from '../auth'
 import type {
   CaseFile,
   Conversation,
@@ -189,6 +190,7 @@ function RoundView({ round }: { round: ReviewRound }) {
 
 const DRAFT_STATUS: Record<string, { label: string; tone: 'ok' | 'warn' | 'error' | 'info' | 'neutral' }> = {
   pending_approval: { label: 'Waiting for approval', tone: 'warn' },
+  awaiting_supervisor: { label: 'Waiting for a team lead', tone: 'warn' },
   blocked: { label: 'Blocked by the Red Team', tone: 'error' },
   approved: { label: 'Approved, ready to send', tone: 'ok' },
   rejected: { label: 'Rejected', tone: 'neutral' },
@@ -216,8 +218,12 @@ function Outbound({
   const [body, setBody] = useState(message.body)
   const [note, setNote] = useState('')
   const [confirmSend, setConfirmSend] = useState(false)
+  const user = useCurrentUser()
   const status = DRAFT_STATUS[message.status]
-  const live = ['pending_approval', 'blocked', 'approved'].includes(message.status)
+  const live = ['pending_approval', 'awaiting_supervisor', 'blocked', 'approved'].includes(message.status)
+  const secondStep = message.status === 'awaiting_supervisor'
+  // Four eyes: only a team lead who did not give the first approval can give the second.
+  const canSecond = Boolean(user?.supervisor) && user?.email !== message.first_approved_by
 
   if (!live && message.status !== 'sent') {
     return (
@@ -238,6 +244,9 @@ function Outbound({
         <span className="thread-who">To the customer</span>
         <Badge tone={status.tone}>{status.label}</Badge>
         {message.edited ? <Badge tone="neutral">Edited by an officer</Badge> : null}
+        {message.needs_supervisor && message.status !== 'sent' ? (
+          <Badge tone="info">Needs a team lead (four eyes)</Badge>
+        ) : null}
       </div>
       {editing ? (
         <div className="thread-edit">
@@ -263,8 +272,18 @@ function Outbound({
 
       {message.status === 'sent' ? (
         <p className="muted small">
-          Sent by {message.sent_by} on {formatDateTime(message.sent_at)}, approved by {message.reviewed_by}. Email
-          delivery is not connected yet, so this records the send; nothing was emailed.
+          Sent by {message.sent_by} on {formatDateTime(message.sent_at)}, approved by {message.reviewed_by}
+          {message.first_approved_by ? ` after ${message.first_approved_by}` : ''}.{' '}
+          {message.delivered
+            ? 'Emailed through Microsoft 365.'
+            : 'Email delivery is not connected, so this records the send; nothing was emailed.'}
+        </p>
+      ) : null}
+      {secondStep ? (
+        <p className="muted small">
+          First approved by {message.first_approved_by} on {formatDateTime(message.first_approved_at ?? null)}. This
+          email offers a payment plan or answers a hardship report, so a team lead must approve it too.
+          {!canSecond ? ' You cannot give the second approval: ask a team lead.' : ''}
         </p>
       ) : null}
       {message.status === 'approved' ? (
@@ -299,7 +318,7 @@ function Outbound({
         <div className="thread-actions">
           {message.status !== 'approved' ? (
             <label className="field" htmlFor={`${ids}-note`}>
-              Note or feedback {message.status === 'pending_approval' ? '(needed to reject)' : ''}
+              Note or feedback {message.status !== 'blocked' ? '(needed to reject)' : ''}
               <input
                 id={`${ids}-note`}
                 value={note}
@@ -324,12 +343,25 @@ function Outbound({
                     ).then((ok) => ok && setEditing(false))
                   }
                 >
-                  {editing ? 'Approve the edit' : 'Approve'}
+                  {editing ? 'Approve the edit' : message.needs_supervisor ? 'Approve (first of two)' : 'Approve'}
                 </button>
                 <button type="button" className="btn" disabled={busy} onClick={() => setEditing(!editing)}>
                   {editing ? 'Cancel edit' : 'Edit'}
                 </button>
               </>
+            ) : null}
+            {secondStep ? (
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={busy || !canSecond}
+                title={canSecond ? undefined : 'A different person who is a team lead must approve it'}
+                onClick={() =>
+                  void onAct(() => api.approveMessage(message.id, note.trim() ? { note: note.trim() } : {}))
+                }
+              >
+                Approve as team lead
+              </button>
             ) : null}
             {message.status === 'approved' ? (
               <button

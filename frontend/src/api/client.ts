@@ -19,6 +19,8 @@ import type {
   FollowUp,
   FollowUpRun,
   Inbox,
+  Ledger,
+  MailboxPoll,
   Health,
   KnowledgeBaseStats,
   PolicyDocument,
@@ -203,6 +205,16 @@ export const api = {
   sendMessage: (id: number) => request<Conversation>(`/api/admin/messages/${id}/send`, { method: 'POST' }),
 
   inbox: () => request<Inbox>('/api/admin/inbox'),
+  pollEmail: () => request<MailboxPoll>('/api/admin/email/poll', { method: 'POST' }),
+  ledger: (customerId: number) => request<Ledger>(`/api/admin/customers/${customerId}/ledger`),
+  recordPayment: (customerId: number, body: { amount: number; paid_on: string; note?: string }) =>
+    request<Ledger>(`/api/admin/customers/${customerId}/payments`, { method: 'POST', json: body }),
+  recordPromise: (customerId: number, body: { due_on: string; amount?: number }) =>
+    request<Ledger>(`/api/admin/customers/${customerId}/promises`, { method: 'POST', json: body }),
+  recordContact: (
+    customerId: number,
+    body: { channel?: 'phone' | 'sms'; outcome: 'reached' | 'no_answer' | 'voicemail'; note?: string },
+  ) => request<Ledger>(`/api/admin/customers/${customerId}/contacts`, { method: 'POST', json: body }),
   doNotContact: (customerId: number, reason: string) =>
     request<CustomerDetail>(`/api/admin/customers/${customerId}/do-not-contact`, { method: 'POST', json: { reason } }),
   liftDoNotContact: (customerId: number, note: string) =>

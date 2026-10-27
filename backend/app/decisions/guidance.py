@@ -23,10 +23,14 @@ def _money(amount: int | None) -> str:
 def describe(customer: dict) -> dict:
     """The facts the questions are built from. The data counts lateness in whole months."""
     months = customer["latest_status"] or 0
+    bill = customer["latest_bill"]
+    paid = customer.get("recorded_paid") or 0  # payments recorded in the ledger since
     return {
         "months_late": max(months, 0),
         "days_overdue_estimate": max(months, 0) * 30,
-        "latest_bill": customer["latest_bill"],
+        "latest_bill": bill,
+        "amount_due": None if bill is None else max(bill - paid, 0),
+        "recorded_paid": paid,
         "default_probability": customer["default_probability"],
         "risk_level": customer["risk_level"],
     }

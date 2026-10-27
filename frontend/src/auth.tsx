@@ -85,3 +85,9 @@ export function useAuth(): AuthContextValue {
   if (!value) throw new Error('useAuth must be used inside AuthProvider')
   return value
 }
+
+/** The signed-in user, or null (also outside an AuthProvider, e.g. a component on its own). */
+// eslint-disable-next-line react/only-export-components
+export function useCurrentUser(): User | null {
+  return useContext(AuthContext)?.user ?? null
+}

@@ -1,50 +1,48 @@
 {
   "model_name": "XGBoost (tuned)",
-  "trained_at": "2026-10-26T12:48:50+00:00",
+  "trained_at": "2026-10-27T13:18:35+00:00",
   "target": "default payment next month",
   "features": [
     "LIMIT_BAL",
     "AGE",
     "on_time_payment_rate",
     "avg_payment_delay",
-    "avg_credit_utilization",
-    "EDUCATION_cleaned",
-    "sex_male"
+    "avg_credit_utilization"
   ],
   "threshold": 0.5,
   "best_params": {
-    "colsample_bytree": 1.0,
-    "learning_rate": 0.1,
+    "colsample_bytree": 0.8,
+    "learning_rate": 0.03,
     "max_depth": 3,
-    "min_child_weight": 5,
-    "n_estimators": 200,
+    "min_child_weight": 1,
+    "n_estimators": 750,
     "subsample": 0.8
   },
   "metrics": {
     "threshold": 0.5,
     "validation": {
       "customers": 4500,
-      "accuracy": 0.7493333333333333,
-      "precision": 0.45266903914590745,
-      "recall": 0.6391959798994975,
-      "f1": 0.53,
-      "roc_auc": 0.7699914694728994,
-      "tn": 2736,
-      "fp": 769,
-      "fn": 359,
-      "tp": 636
+      "accuracy": 0.7471111111111111,
+      "precision": 0.4483754512635379,
+      "recall": 0.6241206030150753,
+      "f1": 0.5218487394957984,
+      "roc_auc": 0.7701101800012904,
+      "tn": 2741,
+      "fp": 764,
+      "fn": 374,
+      "tp": 621
     },
     "test": {
       "customers": 4500,
-      "accuracy": 0.7411111111111112,
-      "precision": 0.4397163120567376,
-      "recall": 0.6231155778894473,
-      "f1": 0.5155925155925156,
-      "roc_auc": 0.7690310324805196,
-      "tn": 2715,
-      "fp": 790,
-      "fn": 375,
-      "tp": 620
+      "accuracy": 0.7442222222222222,
+      "precision": 0.44499294781382226,
+      "recall": 0.6341708542713568,
+      "f1": 0.5230004144218815,
+      "roc_auc": 0.7672982602025822,
+      "tn": 2718,
+      "fp": 787,
+      "fn": 364,
+      "tp": 631
     }
   },
   "data": {

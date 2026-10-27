@@ -9,10 +9,15 @@ approval before anything goes out.
                or hands the conversation to a person (a dispute, a complaint, a request to stop
                contact, or anything the policies say a person must handle)
     redraft    a new draft for the same point in the thread, with the officer's feedback
-    approve    an officer accepts a draft, optionally edited (the edit is checked again)
+    approve    an officer accepts a draft, optionally edited (the edit is checked again). A
+               draft that offers a payment plan, or answers a hardship report, needs a second
+               approval by a different person who is a team lead (four eyes)
     reject     an officer turns a draft down, saying why
-    send       an approved email is marked as sent (email delivery is not connected yet); the
-               Follow-up Agent (follow_up.py) then plans the next step
+    send       the contact rules (contact_rules.py: hours, frequency, quiet after a call) are
+               checked, then the email is sent (integrations/mail.py: Microsoft Graph, or
+               recorded only); the Follow-up Agent (follow_up.py) then plans the next step
+    poll       the collections mailbox's new emails are matched to their conversations and
+               received like a pasted reply
     close      the officer ends the conversation
 
 Do not contact: when a customer asks for contact to stop (the Communication Agent reads it in
@@ -35,14 +40,16 @@ from pydantic import BaseModel, Field
 
 from ..core.audit import AuditLog
 from ..core.db import Database, now_iso
+from ..customers.ledger import PROMISE_HORIZON_DAYS, Ledger
 from ..customers.portfolio import Portfolio
+from ..integrations.mail import MailError
 from ..langchain.llm import AnswerGenerator
 from ..langchain.memory import email_thread
 from ..langchain.prompts import CONVERSATION_PROMPT, INTENT_PROMPT
 from ..orchestration import graph
 from ..rag.knowledge_base import KnowledgeBase
-from . import compliance_loop, messages
-from .decision import Recommendation
+from . import compliance_loop, contact_rules, messages
+from .decision import Action, Recommendation
 
 MAX_SENT = 5  # after this many emails without a resolution, a person takes over
 REPLY_REQUIRED = ("reference",)  # a reply needs the reference; the first email needs them all
@@ -60,8 +67,9 @@ class Intent(str, Enum):
     other = "other"
 
 
-# Whatever the model says, these always go to a person.
-ALWAYS_HUMAN = {Intent.dispute, Intent.complaint, Intent.stop_contact}
+# Whatever the model says, these always go to a person. Hardship too: no agent may approve a
+# hardship plan (HA-02), and the agent evaluation showed the model missing vulnerable customers.
+ALWAYS_HUMAN = {Intent.dispute, Intent.complaint, Intent.stop_contact, Intent.hardship}
 
 
 class ReplyDraft(BaseModel):
@@ -72,6 +80,10 @@ class ReplyDraft(BaseModel):
     subject: str = Field(description="The email subject line.")
     body: str = Field(description="The email body, with {placeholders} for amounts and links.")
     source_ids: list[int] = Field(description="Numbers of the policy passages it follows.")
+    promised_date: str = Field(
+        description='A promise to pay: the date as YYYY-MM-DD, worked out from today. "" if none.'
+    )
+    promised_amount: int = Field(description="The amount promised in NT$; 0 if not stated.")
 
 
 class IntentOnly(BaseModel):
@@ -112,6 +124,7 @@ class Conversations:
     def __init__(self, db: Database, audit: AuditLog | None = None) -> None:
         self.db = db
         self.audit = audit or AuditLog(db)
+        self.ledger = Ledger(db)
 
     def create(self, customer_id: int, case_file: dict, decision: dict, user: str) -> int:
         now = now_iso()
@@ -199,7 +212,7 @@ class Conversations:
         with self.db.connect() as conn:
             conn.execute(
                 "UPDATE conversation_messages SET status = 'superseded' WHERE conversation_id = ?"
-                " AND status IN ('pending_approval', 'blocked', 'approved')",
+                " AND status IN ('pending_approval', 'awaiting_supervisor', 'blocked', 'approved')",
                 (conversation_id,),
             )
 
@@ -239,7 +252,9 @@ class Conversations:
             conn.execute(
                 "UPDATE follow_ups SET status = ?, outcome = ?, done_at = ?, last_message_id ="
                 " (SELECT MAX(id) FROM conversation_messages m"
-                " WHERE m.conversation_id = follow_ups.conversation_id) WHERE id = ?",
+                " WHERE m.conversation_id = follow_ups.conversation_id), last_contact_id ="
+                " (SELECT MAX(id) FROM contacts c WHERE c.customer_id = follow_ups.customer_id)"
+                " WHERE id = ?",
                 (status, outcome, now_iso(), follow_up_id),
             )
 
@@ -284,7 +299,8 @@ class Conversations:
                 "SELECT m.id, m.conversation_id, c.customer_id, m.status, m.subject, m.body,"
                 " m.created_at FROM conversation_messages m"
                 " JOIN conversations c ON c.id = m.conversation_id"
-                " WHERE m.status IN ('pending_approval', 'blocked', 'approved')"
+                " WHERE m.status IN ('pending_approval', 'awaiting_supervisor', 'blocked',"
+                " 'approved')"
                 " AND c.status != 'closed' ORDER BY m.created_at, m.id"
             ).fetchall()
             escalated = conn.execute(
@@ -303,6 +319,9 @@ class Conversations:
                 " AND NOT EXISTS (SELECT 1 FROM conversation_messages m"
                 " WHERE m.conversation_id = f.conversation_id"
                 " AND m.id > COALESCE(f.last_message_id, 0))"
+                # ...or once an officer logs a call
+                " AND NOT EXISTS (SELECT 1 FROM contacts k WHERE k.customer_id = f.customer_id"
+                " AND k.channel = 'phone' AND k.id > COALESCE(f.last_contact_id, 0))"
                 " ORDER BY f.done_at, f.id"
             ).fetchall()
         return {
@@ -324,6 +343,8 @@ class Conversations:
         message["review"] = json.loads(message["review"]) if message["review"] else None
         message["edited"] = message.pop("draft_body") is not None
         message.pop("draft_subject")
+        message["needs_supervisor"] = bool(message.get("needs_supervisor"))
+        message["delivered"] = bool(message.get("delivered"))
         return message
 
 
@@ -355,6 +376,15 @@ def draft_status(outcome: dict) -> str:
     return "pending_approval" if outcome["status"] == "passed" else "blocked"
 
 
+def needs_supervisor(outcome: dict) -> bool:
+    """Four eyes: an email that offers a payment plan, or answers a hardship report, needs a
+    team lead's approval too (the hardship policy: a team lead approves the larger plans, and
+    no agent may approve one)."""
+    action = outcome["decision"]["recommendation"].action
+    intent = getattr(outcome["draft"], "intent", None)
+    return action == Action.offer_payment_plan or intent == Intent.hardship
+
+
 def save_draft(store: Conversations, conversation: dict, outcome: dict, review: dict) -> int:
     """Stores a draft the graph wrote, and its trace in the audit trail."""
     status = draft_status(outcome)
@@ -365,6 +395,7 @@ def save_draft(store: Conversations, conversation: dict, outcome: dict, review: 
         subject=outcome["subject"],
         body=outcome["body"],
         review=review,
+        needs_supervisor=int(needs_supervisor(outcome)),
     )
     ids = {"customer_id": conversation["customer_id"], "conversation_id": conversation["id"]}
     store.audit.record_all(outcome["trace"], **ids, message_id=message_id)
@@ -545,6 +576,7 @@ def _reply(
     values = messages.email_values(customer)
     decision = {"recommendation": Recommendation.model_validate(conversation["decision"])}
     rec = decision["recommendation"]
+    today = contact_rules.local_time(contact_rules.load_default()).date()
 
     def build(_: dict) -> str:
         fact_lines = "\n".join(
@@ -565,7 +597,7 @@ def _reply(
             "</customer_email>\n\n"
             f"Action chosen by the Decision Agent: {rec.action.value} "
             f"(priority {rec.priority.value})\n\n<facts>\n{fact_lines}\n</facts>\n\n"
-            f"<sources>\n{blocks}\n</sources>\n\nWrite the reply."
+            f"<sources>\n{blocks}\n</sources>\n\nToday is {today:%A %Y-%m-%d}. Write the reply."
         ) + graph.officer_note(feedback)
 
     job = compliance_loop.EmailJob(
@@ -605,7 +637,34 @@ def _reply(
             )
         escalate(store, conversation, reason, "Communication Agent")
         return
+    _record_promise(store, conversation, draft, today)
     save_draft(store, conversation, outcome, review_of(outcome, passages, values, None))
+
+
+def _record_promise(store: Conversations, conversation: dict, draft: ReplyDraft, today) -> None:
+    """A promise to pay with a date goes into the ledger; the Follow-up Agent checks it."""
+    if draft.intent != Intent.promise_to_pay or not draft.promised_date:
+        return
+    from datetime import date, timedelta
+
+    try:
+        due = date.fromisoformat(draft.promised_date)
+    except ValueError:
+        return  # not a date: nothing is recorded rather than a guess
+    if not today <= due <= today + timedelta(days=PROMISE_HORIZON_DAYS):
+        return
+    amount = draft.promised_amount if draft.promised_amount > 0 else None
+    promise = store.ledger.record_promise(
+        conversation["customer_id"], due, "Communication Agent", amount, conversation["id"]
+    )
+    store.audit.record(
+        "Communication Agent",
+        "ledger.promise",
+        f"Promise to pay {f'NT${amount:,}' if amount else 'the balance'} by {due.isoformat()}.",
+        customer_id=conversation["customer_id"],
+        conversation_id=conversation["id"],
+        detail=promise,
+    )
 
 
 def receive(
@@ -740,7 +799,13 @@ def approve(
     body: str | None = None,
     note: str | None = None,
 ) -> dict:
-    """An officer accepts a draft. An edited draft is checked against the guardrails again."""
+    """An officer accepts a draft. An edited draft is checked against the guardrails again.
+
+    Four eyes: a draft that needs a team lead goes to awaiting_supervisor after the first
+    approval, and only a supervisor who is not the first approver can give the second."""
+    message = store.get_message(message_id)
+    if message and message["status"] == "awaiting_supervisor":
+        return _second_approval(store, message, user, note)
     message = _draft(store, message_id, "pending_approval")
     conversation = store.get(message["conversation_id"])
     contact_allowed(store, conversation["customer_id"])
@@ -760,6 +825,13 @@ def approve(
         "reviewed_at": now_iso(),
         "review_note": note,
     }
+    if message["needs_supervisor"]:
+        fields = {
+            "status": "awaiting_supervisor",
+            "first_approved_by": actor(user),
+            "first_approved_at": now_iso(),
+            "review_note": note,
+        }
     if edited:
         fields |= {
             "subject": subject,
@@ -768,10 +840,13 @@ def approve(
             "draft_body": message["body"],
         }
     store.update_message(message_id, **fields)
+    first = message["needs_supervisor"]
     store.audit.record(
         actor(user),
-        "draft.approved",
-        ("Approved after editing it" if edited else "Approved") + (f": “{note}”" if note else "."),
+        "draft.first_approval" if first else "draft.approved",
+        ("Approved after editing it" if edited else "Approved")
+        + (" (a team lead must approve it too)" if first else "")
+        + (f": “{note}”" if note else "."),
         customer_id=conversation["customer_id"],
         conversation_id=conversation["id"],
         message_id=message_id,
@@ -780,11 +855,46 @@ def approve(
     return store.get(conversation["id"])
 
 
+def _second_approval(store: Conversations, message: dict, user: dict, note: str | None) -> dict:
+    conversation = open_conversation(store, message["conversation_id"])
+    contact_allowed(store, conversation["customer_id"])
+    if not user.get("supervisor"):
+        raise ConversationError(
+            403,
+            "supervisor_required",
+            "This email offers a payment plan or answers a hardship report: a team lead must "
+            "give the second approval.",
+        )
+    if actor(user) == message["first_approved_by"]:
+        raise ConversationError(
+            403,
+            "four_eyes",
+            "Four eyes: the second approval must come from someone other than the first approver.",
+        )
+    store.update_message(
+        message["id"],
+        status="approved",
+        reviewed_by=actor(user),
+        reviewed_at=now_iso(),
+        review_note=note or message["review_note"],
+    )
+    store.audit.record(
+        actor(user),
+        "draft.approved",
+        f"Second approval by a team lead (first: {message['first_approved_by']})"
+        + (f": “{note}”" if note else "."),
+        customer_id=conversation["customer_id"],
+        conversation_id=conversation["id"],
+        message_id=message["id"],
+    )
+    return store.get(conversation["id"])
+
+
 def reject(store: Conversations, message_id: int, user: dict, note: str) -> dict:
     message = store.get_message(message_id)
     if message is None or message["direction"] != "outbound":
         raise ConversationError(404, "not_found", "Draft not found.")
-    if message["status"] not in ("pending_approval", "blocked", "approved"):
+    if message["status"] not in ("pending_approval", "awaiting_supervisor", "blocked", "approved"):
         raise ConversationError(
             409, "wrong_status", f"This draft is {message['status'].replace('_', ' ')}."
         )
@@ -807,28 +917,128 @@ def reject(store: Conversations, message_id: int, user: dict, note: str) -> dict
     return store.get(message["conversation_id"])
 
 
-def send(portfolio: Portfolio, store: Conversations, message_id: int, user: dict) -> dict:
-    """Marks an approved email as sent. Email delivery is not connected yet, so nothing leaves
-    the system: this records that the officer sent it."""
+def send(
+    portfolio: Portfolio,
+    store: Conversations,
+    message_id: int,
+    user: dict,
+    rules: contact_rules.Rules | None = None,
+    mailer=None,
+) -> dict:
+    """Sends an approved email: the contact rules first, then the mailbox (Microsoft Graph,
+    or recorded only when email is not connected)."""
     message = _draft(store, message_id, "approved")
     conversation = store.get(message["conversation_id"])
-    contact_allowed(store, conversation["customer_id"])
-    customer = portfolio.get_customer(conversation["customer_id"])
+    customer_id = conversation["customer_id"]
+    contact_allowed(store, customer_id)
+    customer = portfolio.get_customer(customer_id)
     if not customer or not customer.get("email"):
         raise ConversationError(
             409, "no_email_address", "This customer has no email address on record."
         )
-    store.update_message(message_id, status="sent", sent_by=actor(user), sent_at=now_iso())
+    rules = rules or contact_rules.load_default()
+    broken = contact_rules.problems(rules, store.db, customer_id)
+    if broken:
+        when = contact_rules.next_window(rules)
+        store.audit.record(
+            actor(user),
+            "contact.refused",
+            f"Send refused: {'; '.join(broken)}.",
+            customer_id=customer_id,
+            conversation_id=conversation["id"],
+            message_id=message_id,
+            detail={"rules": rules.describe(), "problems": broken},
+        )
+        raise ConversationError(
+            409,
+            "contact_rules",
+            f"Not sent: {'; '.join(broken)}. Contact hours open again at "
+            f"{contact_rules.local_time(rules, when):%Y-%m-%d %H:%M} customer time.",
+        )
+    result = {"delivered": False, "external_id": None, "external_conversation_id": None}
+    if mailer is not None:
+        try:
+            result = mailer.send(
+                customer["email"], message["subject"], message["body"], customer_id
+            )
+        except MailError as exc:
+            raise ConversationError(502, "email_failed", f"Not sent: {exc.message}") from exc
+    store.update_message(
+        message_id,
+        status="sent",
+        sent_by=actor(user),
+        sent_at=now_iso(),
+        delivered=int(result["delivered"]),
+        external_id=result["external_id"],
+        external_conversation_id=result["external_conversation_id"],
+    )
+    store.ledger.record_contact(customer_id, "email", "sent", actor(user), conversation["id"])
     store.cancel_follow_ups(conversation["id"], "A newer email was sent.")
     store.audit.record(
         actor(user),
         "draft.sent",
-        "Email sent (recorded: email delivery is not connected yet).",
-        customer_id=conversation["customer_id"],
+        "Email sent through Microsoft 365."
+        if result["delivered"]
+        else "Email sent (recorded: email delivery is not connected).",
+        customer_id=customer_id,
         conversation_id=conversation["id"],
         message_id=message_id,
+        detail={"delivered": result["delivered"]},
     )
     return store.get(conversation["id"])
+
+
+# --- the mailbox ----------------------------------------------------------------------------
+
+REFERENCE = re.compile(r"\bCA-(\d{6})\b")
+
+
+def match_email(store: Conversations, portfolio: Portfolio, email: dict) -> dict | None:
+    """The open conversation an incoming email belongs to: the mailbox thread it replies to,
+    or else its reference (CA-000123) when it comes from that customer's address."""
+    if email.get("conversation_id"):
+        with store.db.connect() as conn:
+            row = conn.execute(
+                "SELECT conversation_id FROM conversation_messages"
+                " WHERE external_conversation_id = ? ORDER BY id DESC LIMIT 1",
+                (email["conversation_id"],),
+            ).fetchone()
+        if row:
+            conversation = store.get(row["conversation_id"])
+            return conversation if conversation["status"] != "closed" else None
+    found = REFERENCE.search(f"{email.get('subject') or ''}\n{email['body']}")
+    if not found:
+        return None
+    customer = portfolio.get_customer(int(found[1]))
+    if not customer or (customer.get("email") or "").lower() != email["from"]:
+        return None  # a reference alone is not enough: anyone can type one
+    conversation = store.latest_for(customer["customer_id"])
+    return conversation if conversation and conversation["status"] != "closed" else None
+
+
+def poll_mailbox(kb, portfolio: Portfolio, generator, store: Conversations, mailer) -> dict:
+    """Reads the collections mailbox: each new email that belongs to an open conversation is
+    received like a pasted reply (the Communication Agent answers it) and marked read. The
+    others stay unread for a person to look at."""
+    try:
+        emails = mailer.unread()
+    except MailError as exc:
+        raise ConversationError(503, "email_unavailable", exc.message) from exc
+    matched, unmatched, failed = [], 0, []
+    mailbox = {"email": "Collections mailbox"}
+    for email in emails:
+        conversation = match_email(store, portfolio, email)
+        if conversation is None:
+            unmatched += 1
+            continue
+        try:
+            receive(kb, portfolio, generator, store, conversation["id"], email.get("subject"),
+                    email["body"][:5000] or "(empty email)", mailbox)  # fmt: skip
+            mailer.mark_read(email["id"])
+            matched.append(conversation["id"])
+        except (ConversationError, MailError) as exc:
+            failed.append({"conversation_id": conversation["id"], "error": exc.message})
+    return {"fetched": len(emails), "matched": matched, "unmatched": unmatched, "failed": failed}
 
 
 def close(store: Conversations, conversation_id: int, user: dict, note: str | None) -> dict:

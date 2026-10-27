@@ -3,6 +3,7 @@ import { api } from '../api/client'
 import type { CustomerDetail } from '../api/types'
 import { CollectionsConversation } from '../components/CollectionsConversation'
 import { DoNotContact } from '../components/DoNotContact'
+import { LedgerPanel } from '../components/LedgerPanel'
 import { PolicyGuidance } from '../components/PolicyGuidance'
 import { Simulator } from '../components/Simulator'
 import { PaymentStrip, ProbabilityGauge } from '../components/visuals'
@@ -171,6 +172,8 @@ export function CustomerRecord() {
               </table>
             </div>
           </section>
+
+          <LedgerPanel key={`ledger-${c.customer_id}`} customerId={c.customer_id} />
 
           <Simulator key={`sim-${c.customer_id}`} customer={c} />
 

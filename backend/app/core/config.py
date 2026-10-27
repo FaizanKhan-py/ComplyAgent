@@ -70,6 +70,26 @@ class Settings:
     register_max_per_hour: int = 10  # sign-ups per client
     # How often the Follow-up Agent runs the follow-ups that are due; 0 runs them only on request.
     follow_up_interval_minutes: int = 0
+    # Contact rules (decisions/contact_rules.py). The indexed contact policy wins; these are
+    # used for whatever it does not state.
+    customer_utc_offset: str = "+08:00"  # the dataset's customers are in Taiwan
+    contact_start_hour: float = 8.0
+    contact_end_hour: float = 21.0
+    max_contacts_per_period: int = 3
+    contact_period_days: int = 7
+    quiet_hours_after_call: int = 48
+    public_holidays: tuple[str, ...] = ()  # YYYY-MM-DD, customer time
+    # Email (integrations/mail.py): "none" records sends only; "graph" sends through Microsoft
+    # 365 with an app registration (client credentials) that has Mail.Send and Mail.ReadWrite.
+    email_provider: str = "none"
+    graph_tenant_id: str = ""
+    graph_client_id: str = ""
+    graph_client_secret: str = ""
+    graph_mailbox: str = ""  # the collections mailbox that sends and receives
+    # Outside production every email goes here instead of to the customer, so a test never
+    # reaches a real person.
+    email_redirect_to: str = ""
+    email_poll_minutes: int = 0  # read the mailbox every N minutes; 0 only on request
 
     def __post_init__(self) -> None:
         if self.chunk_size < 100:
@@ -86,6 +106,28 @@ class Settings:
             raise ValueError("The sign-in and sign-up limits must be at least 1")
         if self.is_production and self.cookie_secure is False:
             raise ValueError("COOKIE_SECURE cannot be false when APP_ENV=production")
+        if self.email_provider not in ("none", "graph"):
+            raise ValueError("EMAIL_PROVIDER must be none or graph")
+        if self.email_provider == "graph":
+            missing = [
+                name
+                for name, value in (
+                    ("GRAPH_TENANT_ID", self.graph_tenant_id),
+                    ("GRAPH_CLIENT_ID", self.graph_client_id),
+                    ("GRAPH_CLIENT_SECRET", self.graph_client_secret),
+                    ("GRAPH_MAILBOX", self.graph_mailbox),
+                )
+                if not value
+            ]
+            if missing:
+                raise ValueError(f"EMAIL_PROVIDER=graph needs {', '.join(missing)}")
+            if not self.is_production and not self.email_redirect_to:
+                raise ValueError(
+                    "Outside production, EMAIL_PROVIDER=graph needs EMAIL_REDIRECT_TO, so test "
+                    "emails go to you and never to a real customer"
+                )
+        if not 0 <= self.contact_start_hour < self.contact_end_hour <= 24:
+            raise ValueError("CONTACT_START_HOUR and CONTACT_END_HOUR must be 0-24, start first")
 
     @property
     def is_production(self) -> bool:
@@ -153,5 +195,21 @@ class Settings:
             login_window_minutes=_int("LOGIN_WINDOW_MINUTES", 15),
             register_max_per_hour=_int("REGISTER_MAX_PER_HOUR", 10),
             follow_up_interval_minutes=_int("FOLLOW_UP_INTERVAL_MINUTES", 0),
+            customer_utc_offset=os.getenv("CUSTOMER_UTC_OFFSET", "+08:00").strip() or "+08:00",
+            contact_start_hour=float(os.getenv("CONTACT_START_HOUR", "8") or 8),
+            contact_end_hour=float(os.getenv("CONTACT_END_HOUR", "21") or 21),
+            max_contacts_per_period=_int("MAX_CONTACTS_PER_PERIOD", 3),
+            contact_period_days=_int("CONTACT_PERIOD_DAYS", 7),
+            quiet_hours_after_call=_int("QUIET_HOURS_AFTER_CALL", 48),
+            public_holidays=tuple(
+                d.strip() for d in os.getenv("PUBLIC_HOLIDAYS", "").split(",") if d.strip()
+            ),
+            email_provider=os.getenv("EMAIL_PROVIDER", "none").strip().lower() or "none",
+            graph_tenant_id=os.getenv("GRAPH_TENANT_ID", "").strip(),
+            graph_client_id=os.getenv("GRAPH_CLIENT_ID", "").strip(),
+            graph_client_secret=os.getenv("GRAPH_CLIENT_SECRET", "").strip(),
+            graph_mailbox=os.getenv("GRAPH_MAILBOX", "").strip(),
+            email_redirect_to=os.getenv("EMAIL_REDIRECT_TO", "").strip(),
+            email_poll_minutes=_int("EMAIL_POLL_MINUTES", 0),
             **kwargs,
         )

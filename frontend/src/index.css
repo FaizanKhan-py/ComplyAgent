@@ -1114,3 +1114,8 @@ input[aria-invalid='true'] { border-color: var(--error); box-shadow: 0 0 0 3px v
 .inbox-list p { margin: 4px 0 0; }
 .dnc { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s2); }
 .dnc-form { display: flex; flex-direction: column; gap: var(--s2); margin-top: var(--s2); max-width: 36rem; }
+
+/* Collections ledger on the customer page. */
+.ledger-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s2) var(--s3); padding: var(--s3); border: 1px dashed var(--rule-strong); border-radius: 6px; }
+.ledger-form .field { min-width: 11rem; }
+.ledger-form > p { flex-basis: 100%; margin: 0; }

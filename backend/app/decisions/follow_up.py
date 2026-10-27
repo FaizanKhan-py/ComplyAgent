@@ -9,6 +9,11 @@
     run_due   every scheduled follow-up whose time has come (the Follow-ups page, the
               run-follow-ups command, or the scheduler when FOLLOW_UP_INTERVAL_MINUTES is set)
 
+A promise to pay (ledger.py) sets the plan: check the day after the promised date. When the
+follow-up runs, the promise is settled first: kept (the payments cover it) means no reminder;
+broken means a reminder that says so, and a second broken promise hands the conversation to a
+person.
+
 A reply from the customer, a newer email, a hand-over or closing the conversation cancels the
 scheduled follow-up. Planning never blocks sending: if the model cannot plan, the default (a
 reminder after DEFAULT_WAIT_DAYS) is scheduled and the audit trail says why.
@@ -28,7 +33,7 @@ from ..langchain.llm import AnswerGenerator
 from ..langchain.memory import email_thread
 from ..langchain.prompts import FOLLOW_UP_PLAN_PROMPT, FOLLOW_UP_PROMPT
 from ..rag.knowledge_base import KnowledgeBase
-from . import compliance_loop, messages
+from . import compliance_loop, contact_rules, messages
 from .conversation import (
     REPLY_REQUIRED,
     ConversationError,
@@ -160,7 +165,23 @@ def plan(
             reason=f"The default plan: a reminder after {DEFAULT_WAIT_DAYS} days without a reply.",
             source_ids=[],
         )
-    due = _iso(_now() + timedelta(days=result.wait_days))
+    # Due inside the contact hours, so the reminder can go out when it is due.
+    due = _iso(contact_rules.next_window(contact_rules.load_default(),
+                                         _now() + timedelta(days=result.wait_days)))  # fmt: skip
+    promise = store.ledger.open_promise(conversation["customer_id"])
+    if promise:
+        # Check the payment the day after the promised date, when the contact hours open.
+        rules = contact_rules.load_default()
+        day_after = datetime.fromisoformat(promise["due_on"]).replace(tzinfo=rules.offset)
+        due = _iso(contact_rules.next_window(rules, day_after + timedelta(days=1)))
+        planned_by = "promise"
+        result = FollowUpPlan(
+            wait_days=max(1, (datetime.fromisoformat(due) - _now()).days),
+            action=FollowUpAction.send_reminder,
+            reason=f"The customer promised to pay by {promise['due_on']}: check the payment "
+            "the day after, and remind them only if it has not arrived.",
+            source_ids=[],
+        )
     follow_up_id = store.schedule_follow_up(
         conversation_id, conversation["customer_id"], due, result.action.value, result.reason
     )
@@ -176,7 +197,8 @@ def plan(
     return store.get_follow_up(follow_up_id)
 
 
-def _reminder(kb, portfolio, generator, store: Conversations, conversation: dict) -> str:
+def _reminder(kb, portfolio, generator, store: Conversations, conversation: dict,
+              broken: dict | None = None) -> str:  # fmt: skip
     """Drafts the follow-up email through the graph. Returns the outcome to record."""
     if generator is None:
         raise ConversationError(
@@ -205,7 +227,14 @@ def _reminder(kb, portfolio, generator, store: Conversations, conversation: dict
     def build(_: dict) -> str:
         return (
             f"The last email was sent on {last_sent['sent_at'][:10]} and the customer has not "
-            f"replied.\nAction chosen by the Decision Agent: {rec.action.value} "
+            "replied."
+            + (
+                f" They promised to pay by {broken['due_on']}, and that payment has not been "
+                "recorded: say so politely and ask them to pay or get in touch."
+                if broken
+                else ""
+            )
+            + f"\nAction chosen by the Decision Agent: {rec.action.value} "
             f"(priority {rec.priority.value})\n\n{_blocks(facts, passages)}\n\n"
             "Write the follow-up email."
         )
@@ -254,13 +283,28 @@ def run(
         return store.get(conversation["id"])
 
     action = follow_up["action"]
-    if action == FollowUpAction.escalate_to_human.value:
+    customer_id = conversation["customer_id"]
+    today = contact_rules.local_time(contact_rules.load_default()).date()
+    settled = store.ledger.check_promise(customer_id, today)
+    if settled:
+        store.audit.record(
+            "Follow-up Agent", f"ledger.promise_{settled['status']}", settled["outcome"], **ids,
+            detail=settled,
+        )  # fmt: skip
+    broken = settled if settled and settled["status"] == "broken" else None
+    if settled and settled["status"] == "kept":
+        result = f"No reminder: the promise to pay was kept. {settled['outcome']}"
+    elif broken and store.ledger.broken_count(customer_id, conversation["id"]) >= 2:
+        reason = "Two promises to pay were broken, so a person takes over."
+        escalate(store, conversation, reason, "Follow-up Agent")
+        result = reason
+    elif action == FollowUpAction.escalate_to_human.value:
         escalate(store, conversation, follow_up["reason"], "Follow-up Agent")
         result = "The conversation was handed to a person."
     elif action == FollowUpAction.schedule_call.value:
         result = f"An officer should call the customer now. {follow_up['reason']}"
     else:
-        result = _reminder(kb, portfolio, generator, store, conversation)
+        result = _reminder(kb, portfolio, generator, store, conversation, broken)
     store.finish_follow_up(follow_up_id, "done", result)
     store.audit.record(
         by, "follow_up.done", result, **ids, detail={"follow_up_id": follow_up_id, "action": action}

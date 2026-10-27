@@ -12,6 +12,9 @@ Run from the backend directory with the virtualenv active:
     python -m app.manage add-documents ../sample_policies/*_policy.*
     python -m app.manage evaluate-rag
     python -m app.manage run-follow-ups       # the Follow-up Agent: every follow-up now due
+    python -m app.manage poll-email           # read the collections mailbox for replies
+    python -m app.manage set-supervisor --email lead@example.com [--off]
+    python -m app.manage evaluate-agents      # score the agents on sample_policies/agent_eval.json
 
 Sign-up through the web page creates an ordinary user, unless the address is listed in
 ADMIN_EMAILS. Otherwise administrators can only be made here, by someone who already has
@@ -119,6 +122,11 @@ def main(
     role = commands.add_parser("set-role", help="promote or demote an existing account")
     role.add_argument("--email", required=True)
     role.add_argument("--role", required=True, choices=auth.ROLES)
+    lead = commands.add_parser(
+        "set-supervisor", help="make an administrator a team lead (the second approval)"
+    )
+    lead.add_argument("--email", required=True)
+    lead.add_argument("--off", action="store_true", help="remove the team lead role")
     reset = commands.add_parser("reset-password", help="set a new password and end all sessions")
     reset.add_argument("--email", required=True)
     commands.add_parser("list-users", help="list every account")
@@ -141,6 +149,9 @@ def main(
     check = commands.add_parser("evaluate-rag", help="ask the test questions and score the answers")
     check.add_argument("--questions", type=Path, default=evaluation.DEFAULT_QUESTIONS)
     commands.add_parser("run-follow-ups", help="carry out the follow-ups that are due")
+    commands.add_parser("poll-email", help="read the collections mailbox for customer replies")
+    agents = commands.add_parser("evaluate-agents", help="score the agents against test cases")
+    agents.add_argument("--cases", type=Path, default=None)
     args = parser.parse_args(argv)
 
     load_dotenv(BACKEND_DIR / ".env")
@@ -172,6 +183,38 @@ def main(
             return 0
         if args.command in ("add-documents", "evaluate-rag"):
             return _knowledge_base_command(args, kb or _build_kb(settings, db))
+        if args.command == "poll-email":
+            from .decisions.conversation import Conversations, poll_mailbox
+            from .integrations.mail import build_mailer
+
+            kb = kb or _build_kb(settings, db)
+            result = poll_mailbox(
+                kb, Portfolio(db), kb.generator, Conversations(db), build_mailer(settings)
+            )
+            print(
+                f"{result['fetched']} new email(s): {len(result['matched'])} matched to a "
+                f"conversation, {result['unmatched']} left unread for a person."
+            )
+            for failure in result["failed"]:
+                print(
+                    f"Conversation {failure['conversation_id']}: {failure['error']}",
+                    file=sys.stderr,
+                )
+            return 1 if result["failed"] else 0
+        if args.command == "evaluate-agents":
+            from .decisions import agent_evaluation
+
+            kb = kb or _build_kb(settings, db)
+            if kb.generator is None:
+                print(
+                    "No language model is configured: set the AZURE_AI_* settings.", file=sys.stderr
+                )
+                return 1
+            report = agent_evaluation.run(
+                kb, kb.generator, args.cases or agent_evaluation.DEFAULT_CASES
+            )
+            print(agent_evaluation.format_report(report))
+            return 0
         if args.command == "run-follow-ups":
             from .decisions import follow_up
             from .decisions.conversation import Conversations
@@ -207,6 +250,14 @@ def main(
             auth.check_password_rules(password, email)
             db.create_user(email, name, auth.hash_password(password), "admin")
             print(f"Created administrator {email}.")
+        elif args.command == "set-supervisor":
+            user = _existing(db, email)
+            if user["role"] != "admin" and not args.off:
+                print(f"{email} must be an administrator first (set-role).", file=sys.stderr)
+                return 1
+            db.set_supervisor(user["id"], not args.off)
+            what = "no longer a team lead" if args.off else "a team lead (second approver)"
+            print(f"{email} is now {what}. Their open sessions were ended.")
         elif args.command == "set-role":
             user = _existing(db, email)
             db.set_role(user["id"], args.role)

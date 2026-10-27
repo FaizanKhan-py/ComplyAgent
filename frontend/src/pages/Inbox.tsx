@@ -1,12 +1,14 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api/client'
 import type { FollowUp, InboxDraft } from '../api/types'
-import { Badge, EmptyState, ErrorState, Loading, PageHeader, RefreshButton } from '../components/ui'
+import { Badge, EmptyState, ErrorState, Loading, Notice, PageHeader, RefreshButton } from '../components/ui'
 import { useResource } from '../hooks/useResource'
-import { formatDateTime } from '../lib/format'
+import { errorMessage, formatDateTime } from '../lib/format'
 
 const DRAFT_LABEL: Record<InboxDraft['status'], { label: string; tone: 'warn' | 'error' | 'ok' }> = {
   pending_approval: { label: 'Waiting for approval', tone: 'warn' },
+  awaiting_supervisor: { label: 'Waiting for a team lead', tone: 'warn' },
   blocked: { label: 'Blocked by the Red Team', tone: 'error' },
   approved: { label: 'Approved, not sent', tone: 'ok' },
 }
@@ -46,15 +48,56 @@ function FollowUpItem({ f, label }: { f: FollowUp; label: string }) {
  */
 export function Inbox() {
   const inbox = useResource(api.inbox, 30000)
+  const config = useResource(api.config)
   const data = inbox.data
+  const [polling, setPolling] = useState(false)
+  const [polled, setPolled] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
+
+  async function checkMailbox() {
+    setPolling(true)
+    setPolled(null)
+    try {
+      const r = await api.pollEmail()
+      setPolled({
+        tone: 'ok',
+        text: `${r.fetched} new email(s): ${r.matched.length} added to their conversations, ${r.unmatched} left unread in the mailbox for a person.${r.failed.length ? ` ${r.failed.length} failed: ${r.failed.map((f) => f.error).join('; ')}` : ''}`,
+      })
+      await inbox.refresh()
+    } catch (err) {
+      setPolled({ tone: 'error', text: errorMessage(err) })
+    } finally {
+      setPolling(false)
+    }
+  }
+  const mailbox = config.data?.email_provider === 'graph'
   return (
     <>
       <PageHeader
         eyebrow="Human approval"
         title="Approvals"
         description="Nothing reaches a customer until an officer approves it. Everything waiting for a person, oldest first."
-        actions={<RefreshButton busy={inbox.refreshing} onClick={() => void inbox.refresh()} />}
+        actions={
+          <>
+            {mailbox ? (
+              <button type="button" className="btn" disabled={polling} onClick={() => void checkMailbox()}>
+                {polling ? <span className="spinner spinner-sm" aria-hidden="true" /> : null}
+                Check the mailbox
+              </button>
+            ) : null}
+            <RefreshButton busy={inbox.refreshing} onClick={() => void inbox.refresh()} />
+          </>
+        }
       />
+      {polled ? <Notice tone={polled.tone}>{polled.text}</Notice> : null}
+      {config.data && !mailbox ? (
+        <p className="muted small">
+          Email is not connected (EMAIL_PROVIDER=none): Send only records an email, and customer replies are pasted
+          in on the customer's page.
+        </p>
+      ) : null}
+      {config.data?.email_redirect_to ? (
+        <Notice tone="info">Test mode: every email goes to {config.data.email_redirect_to}, not to the customer.</Notice>
+      ) : null}
       {inbox.loading ? (
         <Loading label="Loading the inbox…" />
       ) : inbox.error && !data ? (

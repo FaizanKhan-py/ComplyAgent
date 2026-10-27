@@ -4,9 +4,11 @@ The notebook's model is run on a changed copy of one customer; nothing in the da
 
     scenarios   ready-made what-ifs about payment behaviour: pays this month's bill in full,
                 one month less late, catches up completely, misses next month, a higher limit
-    fairness    the same customer with only sex or education changed. Collections decisions
-                never use them, but the risk model was trained with them, so this shows how much
-                they move its prediction (a large change is a fairness finding to report)
+    fairness    the same customer with only a personal attribute changed (age, and sex or
+                education if the model still uses them). Collections decisions never use them,
+                so this shows how much the model's prediction depends on who the customer is (a
+                large change is a fairness finding to report). The notebook no longer trains on
+                sex or education; a model that does is still checked.
     custom      the officer's own changes: the latest month's status, bill and payment, and the
                 credit limit; optionally the Decision Agent then decides for the changed record
 
@@ -106,7 +108,18 @@ def scenarios(customer: dict) -> list[dict]:
         if name != customer["education"]:
             add(f"education_{code}", f"Same record, education: {name.lower()}", "fairness",
                 {**customer, "education": name})  # fmt: skip
+    for years in (-10, 10):
+        age = customer["age"] + years
+        if 18 <= age <= 100:
+            older = "older" if years > 0 else "younger"
+            label = f"Same record, {abs(years)} years {older}"
+            add(f"age_{years:+d}", label, "fairness", {**customer, "age": age})
     return found
+
+
+# The personal attributes a model may use, by its input name, and the scenarios that test them.
+PERSONAL_INPUTS = {"AGE": ("age", "age_"), "sex_male": ("sex", "sex"),
+                   "EDUCATION_cleaned": ("education", "education_")}  # fmt: skip
 
 
 def _score(model, customers: list[dict]) -> list[float]:
@@ -126,7 +139,12 @@ def simulate(models_dir: Path, customer: dict, custom: dict | None = None) -> di
     """The model's prediction for the record, every ready-made what-if, and the custom change.
     Raises ModelMissing when no model files can be used."""
     model = ModelFiles(models_dir).load()
-    found = scenarios(customer)
+    # Only test the personal attributes this model actually uses.
+    unused = [prefix for name, (_, prefix) in PERSONAL_INPUTS.items() if name not in model.features]
+    found = [
+        s for s in scenarios(customer)
+        if s["kind"] != "fairness" or not any(s["key"].startswith(p) for p in unused)
+    ]  # fmt: skip
     changed = _changed(customer, **custom) if custom else None
     records = [customer, *(s["customer"] for s in found), *([changed] if changed else [])]
     probabilities = _score(model, records)
@@ -140,6 +158,9 @@ def simulate(models_dir: Path, customer: dict, custom: dict | None = None) -> di
         "model_name": model.metadata.get("model_name"),
         "threshold": model.threshold,
         "base": _result(model, base),
+        "personal_inputs": [
+            label for name, (label, _) in PERSONAL_INPUTS.items() if name in model.features
+        ],
         "scenarios": [
             {"key": s["key"], "label": s["label"], "kind": s["kind"], **entry(p)}
             for s, p in zip(found, probabilities[1 : len(found) + 1], strict=True)

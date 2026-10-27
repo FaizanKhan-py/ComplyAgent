@@ -61,6 +61,8 @@ def reply(intent="question", needs_human=False, human_reason="") -> dict:
         "body": "Dear customer,\n\nYou can pay at {payment_link}. Reference: {reference}\n"
         "ComplyAgent Finance",
         "source_ids": [1],
+        "promised_date": "",
+        "promised_amount": 0,
     }
 
 

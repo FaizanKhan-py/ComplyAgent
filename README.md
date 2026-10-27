@@ -20,7 +20,11 @@ dataset (30,000 customers, six months of payment history each), with made-up ema
 | Decision Agent | Customer page → Start conversation | Reads the case file and the policies; recommends reminder / payment plan / call / escalation; every reason cites a fact or policy |
 | Compliance Red Team + loop | Customer page → Compliance review | A second model attacks every draft (and the action behind it); the writer rewrites until nothing is left to fix, up to 4 rounds, or the draft is blocked |
 | Communication Agent | Customer page → The customer replied? | Reads the whole email thread, works out what the customer wants, and drafts the reply, or hands the conversation to a person (dispute, complaint, stop contact) |
-| Human approval | Customer page | Every email waits for an officer: approve (edit is re-checked), reject with a reason, write again with feedback, then send. Who did what and when is stored |
+| Human approval | Customer page, Approvals | Every email waits for an officer: approve (edit is re-checked), reject with a reason, write again with feedback, then send. Payment-plan and hardship emails need a second approval by a different person who is a team lead (four eyes) |
+| Contact rules | (every send) | Fixed rules read from the contact policy: only 08:00-21:00 customer time, not on public holidays, at most 3 contacts in 7 days, none for 48 hours after a call. A send that breaks one is refused, whatever the model wrote |
+| Collections ledger | Customer page → Collections ledger | Payments (lower what the emails ask for), promises to pay (the Communication Agent records "I'll pay Friday" as a date; the Follow-up Agent checks it the day after; two broken promises go to a person) and every contact attempt |
+| Email | Approvals → Check the mailbox | Microsoft 365 through Microsoft Graph: Send really sends, replies are matched to their thread and answered. Off by default; outside production every email goes to a test address |
+| Do not contact | Customer page | A stop request (read by the agent, caught by a fixed phrase check, or recorded by an officer) blocks every email until an officer lifts it |
 | Follow-up Agent | Follow-ups, customer page | After each email it plans, from the contact policy, what happens without a reply: wait N days, then a reminder (drafted and checked like any email), a call, or a hand-over |
 | Counterfactual Simulator | Customer page → Counterfactual simulator | What-ifs on the risk model (pays in full, catches up, misses next month...), a fairness check (only sex or education changed), and your own change, optionally decided by the Decision Agent |
 | Agent orchestration | (backend) `orchestration/graph.py` | One LangGraph `StateGraph` connects the agents; the Red Team loop is its conditional edges. `GET /api/admin/agents/graph` draws it |
@@ -116,7 +120,11 @@ app/
 | | `red_team.py` | The Compliance Red Team Agent: attacks a draft; findings must quote the email |
 | | `compliance_loop.py` | Writer ⇄ guardrails ⇄ Red Team, round after round; can make the Decision Agent decide again |
 | | `conversation.py` | One email thread per customer: runs the graph, stores every draft, approval workflow |
-| | `follow_up.py` | The Follow-up Agent: plans the follow-up after a send, carries it out when due |
+| | `follow_up.py` | The Follow-up Agent: plans the follow-up after a send, checks promises, carries it out when due |
+| | `contact_rules.py` | Contact hours, frequency and quiet period, read from the contact policy; enforced on every send |
+| | `agent_evaluation.py` | Scores the agents on `sample_policies/agent_eval.json` (intents, hand-overs, Red Team catches) |
+| `customers/` | `ledger.py` | Payments, promises to pay and contact attempts |
+| `integrations/` | `mail.py` | Email: Microsoft Graph (send, read replies) or record-only |
 | `orchestration/` | `graph.py` | The LangGraph `StateGraph`: every agent as a node, the compliance loop as its edges |
 | `core/` | `audit.py` | The append-only audit trail |
 | `risk/` | `counterfactual.py` | The Counterfactual Simulator: what-ifs and the fairness check on the risk model |
@@ -159,6 +167,19 @@ npm install
 npm run dev                      # http://localhost:5173
 ```
 
+**Team leads** give the second approval on payment-plan and hardship emails. Make an
+administrator one with `.venv\Scripts\python -m app.manage set-supervisor --email lead@example.com`.
+
+**Email** is off until you set it up. In Microsoft Entra ID, register an app with the
+application permissions `Mail.Send` and `Mail.ReadWrite` (with admin consent) and a client
+secret, then set `EMAIL_PROVIDER=graph`, `GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID`,
+`GRAPH_CLIENT_SECRET` and `GRAPH_MAILBOX` in `backend/.env`. Outside production the backend
+refuses to start without `EMAIL_REDIRECT_TO`: every email goes to that address instead of the
+customer. Replies are read with *Check the mailbox* on the Approvals page,
+`python -m app.manage poll-email`, or every `EMAIL_POLL_MINUTES`.
+
+**Score the agents** against the real model with `.venv\Scripts\python -m app.manage evaluate-agents`.
+
 **Follow-ups** run when you press *Run due follow-ups* on the Follow-ups page, or with
 `.venv\Scripts\python -m app.manage run-follow-ups` (for a scheduled task). To have the
 backend run them itself, set `FOLLOW_UP_INTERVAL_MINUTES=60` in `backend/.env`.
@@ -166,7 +187,13 @@ backend run them itself, set `FOLLOW_UP_INTERVAL_MINUTES=60` in `backend/.env`.
 ## Retrain the model
 
 The notebook is the only place the model is trained. To change it, edit and run the notebook;
-its last cell saves new files to `backend/models/risk_model/`. Then score the customers again:
+its last cell saves new files to `backend/models/risk_model/`. Then score the customers again.
+
+The model does not use sex or education: a collections decision must depend on how the customer
+pays, not on who they are. Leaving them out kept the test ROC-AUC at 0.767 (0.769 with them) and
+raised recall from 0.623 to 0.634. Age is still an input; the simulator's fairness check shows how
+much it moves each prediction.
+
 
 ```powershell
 cd backend

@@ -299,7 +299,7 @@ def email_values(customer: dict) -> dict[str, str]:
     facts = describe(customer)
     reference = f"CA-{customer['customer_id']:06d}"
     return {
-        "amount_due": _money(facts["latest_bill"] or 0),
+        "amount_due": _money(facts["amount_due"] or 0),
         "months_overdue": f"{facts['months_late']} month{'s' if facts['months_late'] != 1 else ''}",
         "payment_link": PAYMENT_URL.format(reference=reference),
         "support_phone": SUPPORT_PHONE,
@@ -367,6 +367,12 @@ def prepare(
         reason = (
             f"The latest bill shows nothing owed (NT${_money(bill or 0)}), so there is no "
             "amount to ask for. A collections officer should check this account."
+        )
+        return {**base, "status": "not_written", "reason": reason}, None
+    if facts["amount_due"] == 0:
+        reason = (
+            f"The payments recorded in the ledger (NT${_money(facts['recorded_paid'])}) cover "
+            "the latest bill, so there is nothing to ask for."
         )
         return {**base, "status": "not_written", "reason": reason}, None
 

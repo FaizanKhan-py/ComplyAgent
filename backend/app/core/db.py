@@ -159,9 +159,62 @@ CREATE TABLE IF NOT EXISTS do_not_contact (
     set_by      TEXT NOT NULL,                   -- an officer, or the Communication Agent
     set_at      TEXT NOT NULL
 );
+-- The collections ledger: what happened after the 2005 dataset ends. No foreign keys to the
+-- customers, like do_not_contact, so a re-import keeps it.
+CREATE TABLE IF NOT EXISTS payments (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    customer_id INTEGER NOT NULL,
+    amount      INTEGER NOT NULL,                -- NT dollars
+    paid_on     TEXT NOT NULL,                   -- YYYY-MM-DD
+    recorded_by TEXT NOT NULL,
+    note        TEXT,
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_payments_customer ON payments(customer_id);
+CREATE TABLE IF NOT EXISTS promises (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    customer_id     INTEGER NOT NULL,
+    conversation_id INTEGER,
+    amount          INTEGER,                     -- NULL: any payment keeps it
+    due_on          TEXT NOT NULL,               -- YYYY-MM-DD
+    status          TEXT NOT NULL,               -- open | kept | broken | cancelled
+    recorded_by     TEXT NOT NULL,               -- an officer, or the Communication Agent
+    created_at      TEXT NOT NULL,
+    resolved_at     TEXT,
+    outcome         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_promises_customer ON promises(customer_id, status);
+-- Every contact attempt (CP-01 counts all channels): sent emails, and calls an officer logs.
+CREATE TABLE IF NOT EXISTS contacts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    customer_id     INTEGER NOT NULL,
+    conversation_id INTEGER,
+    channel         TEXT NOT NULL,               -- email | phone | sms
+    outcome         TEXT NOT NULL,               -- sent | reached | no_answer | voicemail
+    made_by         TEXT NOT NULL,
+    note            TEXT,
+    made_at         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_contacts_customer ON contacts(customer_id, made_at);
 """
 
-USER_COLUMNS = "id, email, full_name, role, created_at, last_login_at"
+USER_COLUMNS = "id, email, full_name, role, supervisor, created_at, last_login_at"
+
+# Columns added after a table was first released, created on older databases at start-up.
+_ADDED_COLUMNS = {
+    "customers": {"email": "TEXT"},
+    "follow_ups": {"last_message_id": "INTEGER", "last_contact_id": "INTEGER"},
+    # A team lead: may give the second approval that payment-plan emails need (four eyes).
+    "users": {"supervisor": "INTEGER NOT NULL DEFAULT 0"},
+    "conversation_messages": {
+        "needs_supervisor": "INTEGER NOT NULL DEFAULT 0",
+        "first_approved_by": "TEXT",
+        "first_approved_at": "TEXT",
+        "delivered": "INTEGER NOT NULL DEFAULT 0",  # really emailed (Microsoft Graph)
+        "external_id": "TEXT",  # the mailbox's message id
+        "external_conversation_id": "TEXT",  # the mailbox's thread id, to match replies
+    },
+}
 
 
 class EmailTaken(Exception):
@@ -178,14 +231,11 @@ class Database:
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
             conn.executescript(SCHEMA)
-            # Databases created before customers had an email address get the column.
-            columns = {row["name"] for row in conn.execute("PRAGMA table_info(customers)")}
-            if "email" not in columns:
-                conn.execute("ALTER TABLE customers ADD COLUMN email TEXT")
-            # follow_ups tables made before call tasks were tracked get the column.
-            columns = {row["name"] for row in conn.execute("PRAGMA table_info(follow_ups)")}
-            if "last_message_id" not in columns:
-                conn.execute("ALTER TABLE follow_ups ADD COLUMN last_message_id INTEGER")
+            for table, added in _ADDED_COLUMNS.items():
+                columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+                for name, kind in added.items():
+                    if name not in columns:
+                        conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -235,6 +285,15 @@ class Database:
         with self.connect() as conn:
             conn.execute(
                 "UPDATE users SET role = ?, updated_at = ? WHERE id = ?", (role, now_iso(), user_id)
+            )
+            conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+
+    def set_supervisor(self, user_id: int, supervisor: bool) -> None:
+        """Open sessions are closed so the change applies from the next sign-in."""
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE users SET supervisor = ?, updated_at = ? WHERE id = ?",
+                (int(supervisor), now_iso(), user_id),
             )
             conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
 

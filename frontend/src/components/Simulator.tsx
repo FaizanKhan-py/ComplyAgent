@@ -160,8 +160,16 @@ export function Simulator({ customer }: { customer: CustomerDetail }) {
           <div className="message-why">
             <h3>Fairness check</h3>
             <p className="muted small">
-              The same record with only sex or education changed. Collections decisions never use these, but the
-              risk model was trained with them, so any change here is the model's, not the customer's.
+              The same record with only a personal attribute changed. Collections decisions never use these, so any
+              change here comes from the model, not from how the customer pays.{' '}
+              {sim.personal_inputs
+                ? sim.personal_inputs.length
+                  ? `This model uses: ${sim.personal_inputs.join(', ')}.`
+                  : 'This model uses no personal attribute.'
+                : ''}
+              {sim.personal_inputs && !sim.personal_inputs.includes('sex') && !sim.personal_inputs.includes('education')
+                ? ' It was trained without sex and education, so they cannot move its prediction.'
+                : ''}
             </p>
             {biggest >= 0.05 ? (
               <Notice tone="warn">

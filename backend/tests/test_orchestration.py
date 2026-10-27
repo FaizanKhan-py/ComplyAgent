@@ -113,7 +113,13 @@ def test_sending_schedules_a_follow_up_from_the_policies(client, indexed, genera
     (scheduled,) = body["follow_ups"]
     assert scheduled["status"] == "scheduled" and scheduled["action"] == "send_reminder"
     due = datetime.fromisoformat(scheduled["due_at"])
-    assert timedelta(days=2, hours=23) < due - datetime.now(timezone.utc) <= timedelta(days=3)
+    # Three days, moved forward into the contact hours (08:00-21:00 customer time) if needed.
+    assert (
+        timedelta(days=2, hours=23)
+        < due - datetime.now(timezone.utc)
+        <= timedelta(days=3, hours=12)
+    )
+    assert 8 <= due.astimezone(timezone(timedelta(hours=8))).hour < 21
     asked = generator.structured_calls[-1]
     assert asked["system"] == FOLLOW_UP_PLAN_PROMPT
     assert "Emails sent so far: 1." in asked["user"]
@@ -127,7 +133,7 @@ def test_a_wait_outside_the_limits_is_kept_inside_them(client, indexed, generato
     load(client, tmp_path)
     (scheduled,) = send_first_email(client, generator, plan(wait_days=90))["follow_ups"]
     due = datetime.fromisoformat(scheduled["due_at"])
-    assert due - datetime.now(timezone.utc) <= timedelta(days=follow_up.MAX_WAIT_DAYS)
+    assert due - datetime.now(timezone.utc) <= timedelta(days=follow_up.MAX_WAIT_DAYS, hours=12)
 
 
 def test_planning_never_stops_an_email_from_being_sent(client, indexed, generator, tmp_path):
@@ -186,6 +192,8 @@ def test_a_reply_cancels_the_follow_up(client, indexed, generator, tmp_path):
             "subject": "Re",
             "body": "x",
             "source_ids": [],
+            "promised_date": "",
+            "promised_amount": 0,
         }
     ]
     after = client.post(

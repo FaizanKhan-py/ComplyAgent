@@ -108,6 +108,17 @@ def case_facts(customer: dict) -> list[dict]:
             f"The risk model gives a {d['default_probability']:.0%} chance of default next month "
             f"(risk level: {d['risk_level']})."
         )
+    # The ledger: what happened after the records end.
+    if d["recorded_paid"]:
+        lines.append(
+            f"Since the records, payments of NT${d['recorded_paid']:,} were recorded (the latest "
+            f"on {customer.get('last_payment_on')}); NT${d['amount_due']:,} of the latest bill "
+            "is still due."
+        )
+    promise = customer.get("open_promise")
+    if promise:
+        amount = f"NT${promise['amount']:,}" if promise.get("amount") else "a payment"
+        lines.append(f"The customer promised to pay {amount} by {promise['due_on']}.")
     return [{"id": f"F{n}", "text": text} for n, text in enumerate(lines, start=1)]
 
 
