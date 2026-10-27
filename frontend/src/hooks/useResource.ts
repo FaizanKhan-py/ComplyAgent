@@ -3,17 +3,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 export interface Resource<T> {
   data: T | null
   error: Error | null
-  /** True until the first response (success or failure) arrives. */
   loading: boolean
-  /** True while a later refresh is in flight; `data` stays visible meanwhile. */
+ 
   refreshing: boolean
   refresh: () => Promise<void>
 }
 
-/**
- * Loads data on mount and exposes a manual refresh. `pollMs` may be a function of the latest
- * data, so a page can poll only while something is still changing (e.g. documents processing).
- */
 export function useResource<T>(
   fetcher: () => Promise<T>,
   pollMs?: number | ((data: T) => number | null),
