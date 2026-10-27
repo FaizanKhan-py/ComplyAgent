@@ -6,11 +6,14 @@ Run from the backend directory:  uvicorn app.main:app --reload --port 8000
 from __future__ import annotations
 
 import hmac
+import json
 import logging
+import queue
 import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
+from datetime import date
 from typing import Literal
 
 from dotenv import load_dotenv
@@ -27,17 +30,16 @@ from fastapi import (
 )
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .core import auth, schemas
 from .core.config import BACKEND_DIR, SUPPORTED_EXTENSIONS, Settings
 from .core.db import Database, EmailTaken, now_iso
 from .customers.portfolio import SORT_COLUMNS, CustomerExists, Portfolio
-from .decisions import contact_rules, conversation, follow_up
+from .decisions import contact_rules, conversation, dashboard, follow_up
 from .decisions.decision import DecisionUnavailable, recommend
 from .decisions.guidance import customer_guidance
-from .decisions.messages import generate_message
 from .integrations.mail import build_mailer
 from .langchain.agents import AssistantAgent
 from .langchain.llm import AnswerGenerator, LLMError, build_generator
@@ -647,28 +649,6 @@ def create_app(
             raise ApiError(404, "not_found", "Customer not found.")
         return result
 
-    @app.post(
-        "/api/admin/customers/{customer_id}/message",
-        response_model=schemas.CustomerMessage,
-        dependencies=[admin],
-        tags=["portfolio"],
-        responses=ERROR_RESPONSES,
-    )
-    def message(customer_id: int):
-        """A checked draft collections message for this customer. Nothing is sent."""
-        try:
-            result = generate_message(kb, portfolio, kb.generator, customer_id)
-        except EmbeddingError as exc:
-            raise ApiError(503, "embeddings_unavailable", str(exc)) from exc
-        except DecisionUnavailable as exc:
-            status = 502 if exc.code == "llm_bad_output" else 503
-            raise ApiError(status, exc.code, exc.message) from exc
-        except LLMError as exc:
-            raise ApiError(503 if exc.retryable else 502, exc.code, exc.message) from exc
-        if result is None:
-            raise ApiError(404, "not_found", "Customer not found.")
-        return result
-
     # --- admin: collections conversations (all agents, with an officer's approval) ----------
     #
     # The agents run inside these requests: Case Analyst, Decision Agent, the writer and the
@@ -691,6 +671,43 @@ def create_app(
     conversations = conversation.Conversations(kb.db)
     conv = {"dependencies": [admin], "tags": ["conversations"], "responses": ERROR_RESPONSES}
 
+    def _stream(run, *args) -> StreamingResponse:
+        """Runs an agent request and streams it as server-sent events: one `step` per graph
+        node as it finishes, then `done` with the conversation (or `error`)."""
+        events: queue.Queue = queue.Queue()
+
+        def work() -> None:
+            token = graph.PROGRESS.set(lambda step: events.put(("step", step)))
+            try:
+                result = _conversation(run, *args)
+                done = schemas.Conversation.model_validate(result).model_dump(mode="json")
+                events.put(("done", done))
+            except HTTPException as exc:
+                detail = (
+                    exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+                )
+                events.put(("error", {"status": exc.status_code, "code": "http_error", **detail}))
+            except Exception:
+                logger.exception("Streaming agent request failed")
+                message = "An unexpected server error occurred."
+                events.put(("error", {"status": 500, "code": "internal_error", "message": message}))
+            finally:
+                graph.PROGRESS.reset(token)
+                events.put(None)
+
+        threading.Thread(target=work, daemon=True).start()
+
+        def body():
+            while (item := events.get()) is not None:
+                kind, data = item
+                yield f"event: {kind}\ndata: {json.dumps(data, default=str)}\n\n"
+
+        return StreamingResponse(
+            body(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     @app.get(
         "/api/admin/customers/{customer_id}/conversation",
         response_model=schemas.Conversation | None,
@@ -712,6 +729,42 @@ def create_app(
         return _conversation(
             conversation.start, kb, portfolio, kb.generator, conversations, customer_id, user
         )
+
+    @app.post(
+        "/api/admin/customers/{customer_id}/conversation/stream",
+        response_class=StreamingResponse,
+        **conv,
+    )
+    def start_conversation_stream(customer_id: int, user: dict = admin):
+        """The same as starting a conversation, streaming each agent step as it finishes."""
+        get_customer(customer_id)
+        return _stream(
+            conversation.start, kb, portfolio, kb.generator, conversations, customer_id, user
+        )
+
+    @app.post(
+        "/api/admin/conversations/{conversation_id}/inbound/stream",
+        response_class=StreamingResponse,
+        **conv,
+    )
+    def customer_replied_stream(
+        conversation_id: int, email: schemas.InboundEmail, user: dict = admin
+    ):
+        return _stream(
+            conversation.receive, kb, portfolio, kb.generator, conversations, conversation_id,
+            email.subject, email.body, user,
+        )  # fmt: skip
+
+    @app.post(
+        "/api/admin/conversations/{conversation_id}/redraft/stream",
+        response_class=StreamingResponse,
+        **conv,
+    )
+    def redraft_stream(conversation_id: int, body: schemas.RedraftRequest, user: dict = admin):
+        return _stream(
+            conversation.redraft, kb, portfolio, kb.generator, conversations, conversation_id,
+            body.feedback, user,
+        )  # fmt: skip
 
     @app.post(
         "/api/admin/conversations/{conversation_id}/inbound",
@@ -893,6 +946,11 @@ def create_app(
         _conversation(conversation.lift_contact_block, conversations, customer_id, body.note, user)
         return get_customer(customer_id)
 
+    @app.get("/api/admin/collections/summary", response_model=schemas.CollectionsDashboard, **conv)
+    def collections_summary():
+        """The collections dashboard: work waiting, resolutions, promises, compliance."""
+        return dashboard.summary(kb.db)
+
     @app.get("/api/admin/inbox", response_model=schemas.Inbox, **conv)
     def inbox():
         """Everything across customers that waits for an officer: drafts to approve, blocked
@@ -954,6 +1012,39 @@ def create_app(
             "events": events,
             "next_before": events[-1]["id"] if len(events) == limit else None,
         }
+
+    @app.get(
+        "/api/admin/audit/export",
+        response_class=PlainTextResponse,
+        dependencies=[admin],
+        tags=["audit"],
+        responses={200: {"content": {"text/csv": {}}}},
+    )
+    def export_audit(
+        customer_id: int | None = None,
+        event: str | None = Query(None, max_length=60),
+        since: date | None = None,
+        until: date | None = None,
+        user: dict = admin,
+    ):
+        """The audit trail as CSV for a compliance review, oldest first. The export itself is
+        recorded in the trail."""
+        text, rows = conversations.audit.export_csv(
+            customer_id, event, since.isoformat() if since else None,
+            until.isoformat() if until else None,
+        )  # fmt: skip
+        filters = {k: str(v) for k, v in (("customer_id", customer_id), ("event", event),
+                   ("since", since), ("until", until)) if v is not None}  # fmt: skip
+        conversations.audit.record(
+            conversation.actor(user), "audit.exported", f"Audit trail exported: {rows} row(s).",
+            customer_id=customer_id, detail={"filters": filters, "rows": rows},
+        )  # fmt: skip
+        name = "audit-trail" + (f"-customer-{customer_id}" if customer_id is not None else "")
+        return PlainTextResponse(
+            text,
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{name}.csv"'},
+        )
 
     @app.get(
         "/api/admin/agents/graph",

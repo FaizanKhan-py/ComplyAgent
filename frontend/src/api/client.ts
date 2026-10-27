@@ -6,12 +6,12 @@ import type {
   AuditList,
   AuditQuery,
   AuthStatus,
+  CollectionsDashboard,
   Conversation,
   CustomerCreate,
   CustomerCreated,
   CustomerDetail,
   CustomerGuidance,
-  CustomerMessage,
   CustomerList,
   CustomerQuery,
   DatasetPrediction,
@@ -97,7 +97,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   }
 
   if (response.ok) return (await response.json()) as T
+  throw await failure(response, options.session !== false)
+}
 
+/** The ApiError for a failed response. A 401 on a signed-in call means the session is gone. */
+async function failure(response: Response, session = true): Promise<ApiError> {
   let code = 'http_error'
   let message = `The server returned an error (HTTP ${response.status}).`
   try {
@@ -113,11 +117,86 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
       message = 'Cannot reach the ComplyAgent API. Check that the backend is running.'
     }
   }
-  if (response.status === 401 && options.session !== false) {
+  if (response.status === 401 && session) {
     csrfToken = null
     onUnauthorized?.()
   }
-  throw new ApiError(response.status, code, message)
+  return new ApiError(response.status, code, message)
+}
+
+async function send(path: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(`${BASE_URL}${path}`, { credentials: BASE_URL ? 'include' : 'same-origin', ...init })
+  } catch (error) {
+    if (init.signal?.aborted) throw error
+    throw new ApiError(0, 'network_error', 'Cannot reach the ComplyAgent API. Check that the backend is running.')
+  }
+}
+
+/** Downloads a file the API sends (e.g. the audit trail as CSV) and saves it in the browser. */
+async function download(path: string, fallbackName: string): Promise<void> {
+  const response = await send(path, { method: 'GET' })
+  if (!response.ok) throw await failure(response)
+  const blob = await response.blob()
+  const disposition = response.headers.get('Content-Disposition') ?? ''
+  const name = /filename="([^"]+)"/.exec(disposition)?.[1] ?? fallbackName
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = name
+  document.body.append(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
+
+/** One step the agents report while they work (the backend's server-sent events). */
+export interface AgentStep {
+  node: string
+  actor: string
+  summary: string
+  round: number | null
+}
+
+/**
+ * A POST whose answer is a stream of server-sent events: each `step` goes to `onStep` as the
+ * agents finish it, and the final `done` event's data is the result.
+ */
+async function stream<T>(
+  path: string,
+  body: unknown,
+  onStep: (step: AgentStep) => void,
+  signal?: AbortSignal,
+): Promise<T> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'text/event-stream' }
+  if (csrfToken) headers['X-CSRF-Token'] = csrfToken
+  const response = await send(path, { method: 'POST', headers, body: JSON.stringify(body ?? {}), signal })
+  if (!response.ok || !response.body) throw await failure(response)
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let end: number
+    while ((end = buffer.indexOf('\n\n')) >= 0) {
+      const block = buffer.slice(0, end)
+      buffer = buffer.slice(end + 2)
+      const kind = /^event: (.+)$/m.exec(block)?.[1] ?? 'message'
+      const data = block
+        .split('\n')
+        .filter((line) => line.startsWith('data: '))
+        .map((line) => line.slice(6))
+        .join('\n')
+      if (!data) continue
+      const parsed = JSON.parse(data)
+      if (kind === 'step') onStep(parsed as AgentStep)
+      else if (kind === 'done') return parsed as T
+      else if (kind === 'error') throw new ApiError(parsed.status ?? 500, parsed.code ?? 'http_error', parsed.message)
+    }
+  }
+  throw new ApiError(0, 'network_error', 'The connection closed before the agents finished. Reload to see the result.')
 }
 
 async function startSession(pending: Promise<SessionInfo>): Promise<User> {
@@ -185,9 +264,6 @@ export const api = {
   customerGuidance: (id: number, signal?: AbortSignal) =>
     request<CustomerGuidance>(`/api/admin/customers/${id}/guidance`, { method: 'POST', signal }),
   /** A checked draft from the Decision Agent and the message writer. Nothing is sent. */
-  generateMessage: (id: number, signal?: AbortSignal) =>
-    request<CustomerMessage>(`/api/admin/customers/${id}/message`, { method: 'POST', signal }),
-
   conversation: (customerId: number) =>
     request<Conversation | null>(`/api/admin/customers/${customerId}/conversation`),
   startConversation: (customerId: number, signal?: AbortSignal) =>
@@ -205,6 +281,7 @@ export const api = {
   sendMessage: (id: number) => request<Conversation>(`/api/admin/messages/${id}/send`, { method: 'POST' }),
 
   inbox: () => request<Inbox>('/api/admin/inbox'),
+  collectionsSummary: () => request<CollectionsDashboard>('/api/admin/collections/summary'),
   pollEmail: () => request<MailboxPoll>('/api/admin/email/poll', { method: 'POST' }),
   ledger: (customerId: number) => request<Ledger>(`/api/admin/customers/${customerId}/ledger`),
   recordPayment: (customerId: number, body: { amount: number; paid_on: string; note?: string }) =>
@@ -228,6 +305,23 @@ export const api = {
   runDueFollowUps: () => request<FollowUpRun>('/api/admin/follow-ups/run-due', { method: 'POST' }),
   runFollowUp: (id: number) => request<Conversation>(`/api/admin/follow-ups/${id}/run`, { method: 'POST' }),
 
+  exportAudit: (query: { customer_id?: number; event?: string; since?: string; until?: string } = {}) => {
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(query)) if (value !== undefined && value !== '') params.set(key, String(value))
+    const qs = params.toString()
+    return download(`/api/admin/audit/export${qs ? `?${qs}` : ''}`, 'audit-trail.csv')
+  },
+  /** The same calls as below, streaming each agent step as it finishes. */
+  startConversationLive: (customerId: number, onStep: (step: AgentStep) => void, signal?: AbortSignal) =>
+    stream<Conversation>(`/api/admin/customers/${customerId}/conversation/stream`, {}, onStep, signal),
+  customerRepliedLive: (
+    id: number,
+    body: { subject?: string; body: string },
+    onStep: (step: AgentStep) => void,
+    signal?: AbortSignal,
+  ) => stream<Conversation>(`/api/admin/conversations/${id}/inbound/stream`, body, onStep, signal),
+  redraftLive: (id: number, feedback: string | null, onStep: (step: AgentStep) => void, signal?: AbortSignal) =>
+    stream<Conversation>(`/api/admin/conversations/${id}/redraft/stream`, { feedback }, onStep, signal),
   audit: (query: AuditQuery = {}) => {
     const params = new URLSearchParams()
     for (const [key, value] of Object.entries(query)) if (value !== undefined && value !== '') params.set(key, String(value))

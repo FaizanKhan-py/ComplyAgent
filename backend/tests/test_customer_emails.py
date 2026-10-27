@@ -12,6 +12,7 @@ from app.core.db import Database
 from app.customers.portfolio import ImportFailed, Portfolio
 
 from .test_guidance import load
+from .test_messages import analysis
 from .test_portfolio_api import ROWS, entry, write_csv
 
 EMAILS = {1: "Zainab.Khan1@Example.net", 2: "nadia.chaudhry2@example.org"}
@@ -146,7 +147,10 @@ def test_the_email_address_is_never_given_to_the_language_model(
             "source_ids": [1],
         },
     ]
-    assert client.post("/api/admin/customers/1/message").json()["status"] == "draft"
+    generator.structured_replies.insert(0, analysis())
+    generator.structured_replies.append({"findings": []})
+    response = client.post("/api/admin/customers/1/conversation")
+    assert response.json()["messages"][0]["status"] == "pending_approval"
     client.post("/api/admin/customers/1/guidance")
     sent = [c["system"] + c["user"] for c in generator.structured_calls]
     sent += [c["question"] + str(c["sources"]) for c in generator.calls]

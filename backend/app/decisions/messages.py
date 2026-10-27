@@ -4,8 +4,8 @@ The Decision Agent chooses the action (a reminder, a payment-plan offer, a call)
 policy (MG-04, or whatever the knowledge base holds) supplies the tone and the rules. The model
 writes the email with {placeholders} for every amount, link and reference, and Python fills them
 from the record, so the model can never invent a figure or a link. The draft is then checked
-against fixed guardrails, sent back once if it breaks one, and returned as a draft: nothing is
-ever sent.
+against fixed guardrails and by the Red Team (compliance_loop.py), and waits for an officer's
+approval (conversation.py).
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ from pydantic import BaseModel, Field
 
 from ..customers.portfolio import Portfolio
 from ..langchain.llm import AnswerGenerator
-from ..langchain.prompts import MESSAGE_PROMPT
 from ..rag.knowledge_base import KnowledgeBase
 from .decision import Action, DecisionUnavailable, case_facts, recommend
 from .guidance import describe
@@ -397,59 +396,4 @@ def prepare(
         "values": email_values(customer),
         "facts": writer_facts(customer),
         "level_deadline": level_deadline,
-    }
-
-
-def generate_message(
-    kb: KnowledgeBase, portfolio: Portfolio, generator: AnswerGenerator | None, customer_id: int
-) -> dict | None:
-    """A checked email draft, or the reason none was written. None: no such customer.
-
-    Only the fixed guardrails check it; the full pipeline (conversation.py) adds the Case
-    Analyst, the Red Team and an officer's approval.
-
-    Raises DecisionUnavailable when no decision or draft can be made, and LLMError when the
-    model fails.
-    """
-    prepared = prepare(kb, portfolio, generator, customer_id)
-    if prepared is None:
-        return None
-    result, context = prepared
-    if context is None:
-        return result
-    decision, passages, values = context["decision"], context["passages"], context["values"]
-    rec = decision["recommendation"]
-    deadline = deadline_for(rec, context["level_deadline"])
-    risk_level = context["customer"].get("risk_level")
-    request = build_request(decision, context["facts"], passages, risk_level, deadline)
-    source_ids = {p["number"] for p in passages}
-
-    # Each retry is told exactly what was wrong. Still wrong after that: nobody sees it.
-    corrected: list[str] = []
-    prompt = request
-    for _ in range(MAX_ATTEMPTS):
-        draft = generator.structured(MESSAGE_PROMPT, prompt, MessageDraft)
-        found = problems(draft, values, source_ids, deadline)
-        if not found:
-            break
-        corrected += [f for f in found if f not in corrected]
-        prompt = (
-            f"{request}\n\nYour previous draft broke these rules: {'; '.join(found)}. "
-            "Write it again, following every rule."
-        )
-    else:
-        raise DecisionUnavailable(
-            "llm_bad_output",
-            f"The draft broke the messaging rules {MAX_ATTEMPTS} times. Try generating it again.",
-        )
-    body = fill(draft.body, values)
-    return {
-        **result,
-        "status": "draft",
-        "reason": None,
-        "subject": fill(draft.subject, values),
-        "body": body,
-        "sources": [p for p in passages if p["number"] in set(draft.source_ids)] or passages,
-        "checks": checks(values, body, deadline),
-        "corrected": corrected,
     }

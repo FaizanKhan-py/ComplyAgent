@@ -1119,3 +1119,8 @@ input[aria-invalid='true'] { border-color: var(--error); box-shadow: 0 0 0 3px v
 .ledger-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s2) var(--s3); padding: var(--s3); border: 1px dashed var(--rule-strong); border-radius: 6px; }
 .ledger-form .field { min-width: 11rem; }
 .ledger-form > p { flex-basis: 100%; margin: 0; }
+
+/* The agents' real steps while they work (streamed from the backend). */
+.live-steps { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; font-size: 0.9rem; }
+.live-steps .step-done::before { content: '✓ '; color: var(--primary); font-weight: 700; }
+.live-steps .step-now { color: var(--muted); display: flex; align-items: center; gap: 6px; }

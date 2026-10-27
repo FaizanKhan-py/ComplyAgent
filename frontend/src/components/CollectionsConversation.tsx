@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
-import { api } from '../api/client'
+import { api, type AgentStep } from '../api/client'
 import { useCurrentUser } from '../auth'
 import type {
   CaseFile,
@@ -44,49 +44,36 @@ const INTENT_LABEL: Record<string, string> = {
   other: 'Other',
 }
 
-/** The agents each request runs, with when each usually starts (ms): an estimate, since the
- * backend answers in one request and sends no progress. */
-const START_STEPS = [
-  { label: 'Case Analyst reads the account', from: 0 },
-  { label: 'Decision Agent chooses the action', from: 2500 },
-  { label: 'Writing the email', from: 5000 },
-  { label: 'Red Team attacks the draft', from: 8000 },
-]
-const REPLY_STEPS = [
-  { label: 'Reading the conversation', from: 0 },
-  { label: 'Writing the reply', from: 1500 },
-  { label: 'Red Team attacks the draft', from: 4500 },
-]
-
-export function AgentProgress({ steps, label }: { steps: { label: string; from: number }[]; label: string }) {
-  const [elapsed, setElapsed] = useState(0)
-  useEffect(() => {
-    const started = Date.now()
-    const timer = window.setInterval(() => setElapsed(Date.now() - started), 200)
-    return () => window.clearInterval(timer)
-  }, [])
-  const total = steps[steps.length - 1].from + 3000
-  const percent = Math.round(95 * (1 - Math.exp(-elapsed / (total / 2))))
-  const current = steps.findLastIndex((step) => elapsed >= step.from)
+/**
+ * What the agents have done so far, step by step, as the backend reports each one. The bar
+ * counts finished steps against the fewest a request takes (`expected`); a rewrite round adds
+ * steps, so it never reaches the end before the answer does.
+ */
+export function LiveSteps({ steps, label, expected = 5 }: { steps: AgentStep[]; label: string; expected?: number }) {
+  const percent = Math.min(95, Math.round((steps.length / (expected + 1)) * 100))
   return (
-    <div className="progress-block">
+    <div className="progress-block" role="status" aria-live="polite" aria-label={label}>
       <div
         className="progress"
         role="progressbar"
-        aria-label={label}
+        aria-label={`${label}: steps finished`}
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={percent}
-        aria-valuetext={`${steps[current].label}, about ${percent}%`}
       >
         <div className="progress-fill" style={{ width: `${percent}%` }} />
       </div>
-      <ol className="progress-steps">
-        {steps.map((step, i) => (
-          <li key={step.label} className={i < current ? 'step-done' : i === current ? 'step-now' : undefined}>
-            {step.label}
+      <ol className="live-steps">
+        {steps.map((s, i) => (
+          <li key={i} className="step-done">
+            <strong>{s.actor}</strong>
+            {s.round ? <span className="muted"> (round {s.round})</span> : null}: {s.summary}
           </li>
         ))}
+        <li className="step-now">
+          <span className="spinner spinner-sm" aria-hidden="true" />{' '}
+          {steps.length ? 'Working on the next step…' : 'Starting the agents…'}
+        </li>
       </ol>
     </div>
   )
@@ -493,6 +480,7 @@ export function CollectionsConversation({
   const [conversation, setConversation] = useState<Conversation | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [busy, setBusy] = useState<Busy>(null)
+  const [steps, setSteps] = useState<AgentStep[]>([])
   const [error, setError] = useState('')
   const [replySubject, setReplySubject] = useState('')
   const [replyBody, setReplyBody] = useState('')
@@ -524,6 +512,7 @@ export function CollectionsConversation({
     abort.current = controller
     setBusy(kind)
     setError('')
+    setSteps([])
     try {
       setConversation(await call(controller.signal))
       return true
@@ -536,12 +525,13 @@ export function CollectionsConversation({
   }
 
   const act = (call: () => Promise<Conversation>) => run('action', () => call())
+  const step = (s: AgentStep) => setSteps((current) => [...current, s])
 
   function addReply(event: FormEvent) {
     event.preventDefault()
     if (!conversation || !replyBody.trim()) return
     const body = { body: replyBody.trim(), ...(replySubject.trim() ? { subject: replySubject.trim() } : {}) }
-    void run('reply', (signal) => api.customerReplied(conversation.id, body, signal)).then((ok) => {
+    void run('reply', (signal) => api.customerRepliedLive(conversation.id, body, step, signal)).then((ok) => {
       if (ok) {
         setReplyBody('')
         setReplySubject('')
@@ -573,7 +563,7 @@ export function CollectionsConversation({
               type="button"
               className="btn btn-primary"
               disabled={busy !== null}
-              onClick={() => void run('start', (signal) => api.startConversation(customerId, signal))}
+              onClick={() => void run('start', (signal) => api.startConversationLive(customerId, step, signal))}
             >
               {c ? 'Start a new conversation' : 'Start conversation'}
             </button>
@@ -592,7 +582,7 @@ export function CollectionsConversation({
       </div>
 
       {error ? <Notice tone="error">{error}</Notice> : null}
-      {busy === 'start' ? <AgentProgress steps={START_STEPS} label="Running the agents" /> : null}
+      {busy === 'start' ? <LiveSteps steps={steps} label="Running the agents" /> : null}
       {!c && busy !== 'start' ? (
         <p className="muted">
           {overdue
@@ -618,12 +608,12 @@ export function CollectionsConversation({
                   email={email}
                   busy={busy !== null}
                   onAct={act}
-                  onRedraft={(feedback) => void run('reply', (signal) => api.redraft(c.id, feedback, signal))}
+                  onRedraft={(feedback) => void run('reply', (signal) => api.redraftLive(c.id, feedback, step, signal))}
                 />
               ),
             )}
           </ol>
-          {busy === 'reply' ? <AgentProgress steps={REPLY_STEPS} label="Writing the reply" /> : null}
+          {busy === 'reply' ? <LiveSteps steps={steps} label="Writing the reply" expected={3} /> : null}
           <FollowUpView
             followUps={c.follow_ups}
             busy={busy !== null}

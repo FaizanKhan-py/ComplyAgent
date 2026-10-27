@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { answer, config, customer, customerDetail, doc, health, mockApi, portfolio } from '../test/fixtures'
 import { AuditTrail } from './AuditTrail'
+import { CollectionsDashboard } from './CollectionsDashboard'
 import { CustomerRecord } from './CustomerRecord'
 import { FollowUps } from './FollowUps'
 import { Inbox } from './Inbox'
@@ -15,6 +16,12 @@ import { RiskDashboard } from './RiskDashboard'
 afterEach(() => vi.unstubAllGlobals())
 
 const page = (ui: React.ReactNode) => render(<MemoryRouter>{ui}</MemoryRouter>)
+/** A streamed agent answer: the steps as server-sent events, then the result. */
+const live = (result: unknown, steps: object[] = []) => ({
+  text:
+    steps.map((s) => `event: step\ndata: ${JSON.stringify(s)}\n\n`).join('') +
+    `event: done\ndata: ${JSON.stringify(result)}\n\n`,
+})
 const failure = (status: number, code: string, message: string) => () => ({
   status,
   body: { error: { code, message } },
@@ -293,7 +300,10 @@ describe('Customer Records', () => {
     const api = mockApi({
       'GET /api/admin/customers/7': () => ({ body: customerDetail }),
       'GET /api/admin/customers/7/conversation': () => ({ body: null }),
-      'POST /api/admin/customers/7/conversation': () => ({ body: conversation() }),
+      'POST /api/admin/customers/7/conversation/stream': () =>
+        live(conversation(), [
+          { node: 'case_analyst', actor: 'Case Analyst Agent', summary: 'Case analysed.', round: null },
+        ]),
       'POST /api/admin/messages/1/approve': () => ({ body: conversation([approved]) }),
       'POST /api/admin/messages/1/send': () => ({
         body: conversation([
@@ -337,7 +347,7 @@ describe('Customer Records', () => {
           outbound({ status: 'rejected', reviewed_by: 'officer@example.com', review_note: 'Too formal.' }),
         ]),
       }),
-      'POST /api/admin/conversations/3/redraft': () => ({ body: conversation([outbound({ id: 2 })]) }),
+      'POST /api/admin/conversations/3/redraft/stream': () => live(conversation([outbound({ id: 2 })])),
     })
     record('/customers/7')
     const card = within(await screen.findByRole('region', { name: 'Collections conversation' }))
@@ -353,16 +363,15 @@ describe('Customer Records', () => {
     const api = mockApi({
       'GET /api/admin/customers/7': () => ({ body: customerDetail }),
       'GET /api/admin/customers/7/conversation': () => ({ body: conversation() }),
-      'POST /api/admin/conversations/3/redraft': () => ({
-        body: conversation([outbound({ status: 'superseded' }), outbound({ id: 2, body: 'A warmer email.' })]),
-      }),
+      'POST /api/admin/conversations/3/redraft/stream': () =>
+        live(conversation([outbound({ status: 'superseded' }), outbound({ id: 2, body: 'A warmer email.' })])),
     })
     record('/customers/7')
     const card = within(await screen.findByRole('region', { name: 'Collections conversation' }))
     await user.type(await card.findByLabelText(/Note or feedback/), 'Be warmer.')
     await user.click(card.getByRole('button', { name: 'Write again with this feedback' }))
     expect(await card.findByText('A warmer email.')).toBeInTheDocument()
-    expect(bodyOf(api, '/redraft')).toEqual({ feedback: 'Be warmer.' })
+    expect(bodyOf(api, '/redraft/stream')).toEqual({ feedback: 'Be warmer.' })
   })
 
   it("takes the customer's reply, shows its intent and the drafted answer, or a hand-over", async () => {
@@ -386,15 +395,12 @@ describe('Customer Records', () => {
     const api = mockApi({
       'GET /api/admin/customers/7': () => ({ body: customerDetail }),
       'GET /api/admin/customers/7/conversation': () => ({ body: conversation([sent]) }),
-      'POST /api/admin/conversations/3/inbound': () =>
-        escalate
-          ? {
-              body: conversation([sent, inbound], {
-                status: 'escalated',
-                status_reason: 'The customer disputes the debt.',
-              }),
-            }
-          : { body: conversation([sent, inbound, outbound({ id: 4, body: 'Dear customer, we can help.' })]) },
+      'POST /api/admin/conversations/3/inbound/stream': () =>
+        live(
+          escalate
+            ? conversation([sent, inbound], { status: 'escalated', status_reason: 'The customer disputes the debt.' })
+            : conversation([sent, inbound, outbound({ id: 4, body: 'Dear customer, we can help.' })]),
+        ),
     })
     record('/customers/7')
     const card = within(await screen.findByRole('region', { name: 'Collections conversation' }))
@@ -403,7 +409,7 @@ describe('Customer Records', () => {
     expect(await card.findByText('Hardship')).toBeInTheDocument()
     expect(card.getByText('The customer lost their job and asks to pay less.')).toBeInTheDocument()
     expect(card.getByText('Dear customer, we can help.')).toBeInTheDocument()
-    expect(bodyOf(api, '/inbound')).toEqual({ body: 'I lost my job. Can I pay less?' })
+    expect(bodyOf(api, '/inbound/stream')).toEqual({ body: 'I lost my job. Can I pay less?' })
 
     escalate = true
     await user.type(card.getByLabelText('Their email'), 'This is not my debt.')
@@ -613,12 +619,28 @@ describe('Customer Records', () => {
     expect(card.queryByRole('button', { name: 'Send email' })).not.toBeInTheDocument()
   })
 
+  it('shows the agents\' real steps while they work, and a streamed error', async () => {
+    const user = userEvent.setup()
+    mockApi({
+      'GET /api/admin/customers/7': () => ({ body: customerDetail }),
+      'GET /api/admin/customers/7/conversation': () => ({ body: null }),
+      'POST /api/admin/customers/7/conversation/stream': () => ({
+        text:
+          'event: step\ndata: {"node":"writer","actor":"Message writer","summary":"Draft 1 written.","round":1}\n\n' +
+          'event: error\ndata: {"status":502,"code":"llm_bad_output","message":"The model returned an incomplete answer."}\n\n',
+      }),
+    })
+    record('/customers/7')
+    await user.click(await screen.findByRole('button', { name: 'Start conversation' }))
+    expect(await screen.findByText('The model returned an incomplete answer.')).toBeInTheDocument()
+  })
+
   it('shows why a conversation could not start', async () => {
     const user = userEvent.setup()
     mockApi({
       'GET /api/admin/customers/7': () => ({ body: customerDetail }),
       'GET /api/admin/customers/7/conversation': () => ({ body: null }),
-      'POST /api/admin/customers/7/conversation': failure(503, 'llm_unreachable', 'Could not reach Azure.'),
+      'POST /api/admin/customers/7/conversation/stream': failure(503, 'llm_unreachable', 'Could not reach Azure.'),
     })
     record('/customers/7')
     await user.click(await screen.findByRole('button', { name: 'Start conversation' }))
@@ -1161,5 +1183,63 @@ describe('Approvals', () => {
     await user.click(await screen.findByRole('button', { name: 'Check the mailbox' }))
     expect(await screen.findByText(/3 new email\(s\): 2 added to their conversations, 1 left unread/)).toBeInTheDocument()
     expect(api.count('POST /api/admin/email/poll')).toBe(1)
+  })
+})
+
+describe('Live agent steps', () => {
+  it('lists each finished step and what is running now', async () => {
+    const { LiveSteps } = await import('../components/CollectionsConversation')
+    render(
+      <LiveSteps
+        label="Running the agents"
+        steps={[
+          { node: 'case_analyst', actor: 'Case Analyst Agent', summary: 'Case analysed: early arrears.', round: null },
+          { node: 'red_team', actor: 'Compliance Red Team', summary: 'Round 1: 1 blocker(s) found; sent back.', round: 1 },
+        ]}
+      />,
+    )
+    const status = screen.getByRole('status', { name: 'Running the agents' })
+    expect(within(status).getByText(/Case analysed: early arrears./)).toBeInTheDocument()
+    expect(within(status).getByText('(round 1)')).toBeInTheDocument()
+    expect(within(status).getByText('Working on the next step…')).toBeInTheDocument()
+  })
+})
+
+describe('Collections dashboard', () => {
+  it('shows the work waiting, the results and the compliance figures', async () => {
+    mockApi({
+      'GET /api/admin/collections/summary': () => ({
+        body: {
+          generated_at: '2026-10-27T10:00:00+00:00',
+          work: { pending_approval: 2, awaiting_supervisor: 1, blocked: 1, approved_unsent: 0, escalated: 6, follow_ups_due: 4 },
+          conversations: {
+            open: 5,
+            escalated: 3,
+            closed: 2,
+            emails_per_resolution: 2.5,
+            recent_escalations: [{ id: 9, customer_id: 7, status_reason: 'The customer disputes the debt.', updated_at: '2026-10-27T09:00:00+00:00' }],
+          },
+          promises: { open: 1, kept: 3, broken: 1, kept_rate: 0.75, collected: 12000 },
+          compliance: { drafts_reviewed: 10, first_round_pass_rate: 0.6, average_rounds: 1.5, sends_refused: 2, do_not_contact: 1 },
+          activity: {
+            emails_sent: 6,
+            emails_delivered: 0,
+            follow_ups_scheduled: 5,
+            sent_by_day: [{ day: '2026-10-26', emails: 2 }, { day: '2026-10-27', emails: 4 }],
+            intents: { promise_to_pay: 3, dispute: 1 },
+          },
+        },
+      }),
+    })
+    page(<CollectionsDashboard />)
+    const waiting = within(await screen.findByRole('region', { name: 'Work waiting for a person' }))
+    expect(waiting.getByText('3')).toBeInTheDocument() // 2 + 1 waiting for approval
+    expect(waiting.getByText(/1 need a team lead/)).toBeInTheDocument()
+    const results = within(screen.getByRole('region', { name: 'Results' }))
+    expect(results.getByText('75%')).toBeInTheDocument()
+    expect(results.getByText('2.5')).toBeInTheDocument()
+    expect(results.getByText('60%')).toBeInTheDocument()
+    expect(screen.getByText('Promise to pay')).toBeInTheDocument()
+    expect(screen.getByText(/The customer disputes the debt./)).toBeInTheDocument()
   })
 })

@@ -270,3 +270,118 @@ def test_the_simulator_says_when_there_is_no_model(client, tmp_path):
     response = client.get("/api/admin/customers/1/counterfactuals")
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "model_missing"
+
+
+def test_the_audit_trail_exports_as_csv(client, indexed, generator, tmp_path):
+    import csv
+    import io
+
+    load(client, tmp_path)
+    start(client, generator, analysis(), decision(), draft(), review())
+    with client.app.state.kb.db.connect() as conn:  # a summary that starts like a formula
+        conn.execute(
+            "INSERT INTO audit_log (created_at, actor, event, customer_id, summary)"
+            " VALUES ('2026-10-27T10:00:00+00:00', 'x', 'test.formula', 1, '=HYPERLINK(1)')"
+        )
+    response = client.get("/api/admin/audit/export", params={"customer_id": 1})
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert 'filename="audit-trail-customer-1.csv"' in response.headers["content-disposition"]
+    rows = list(csv.DictReader(io.StringIO(response.text)))
+    assert rows[0]["event"] == "conversation.started"  # oldest first
+    assert {r["actor"] for r in rows} >= {"Case Analyst Agent", "Decision Agent"}
+    assert next(r for r in rows if r["event"] == "test.formula")["summary"] == "'=HYPERLINK(1)"
+    # The export is itself recorded.
+    exported = client.get("/api/admin/audit", params={"event": "audit"}).json()["events"][0]
+    assert exported["detail"]["filters"] == {"customer_id": "1"}
+
+    later = client.get("/api/admin/audit/export", params={"since": "2999-01-01"}).text
+    assert later.strip().splitlines() == [
+        "id,created_at,actor,event,customer_id,conversation_id,message_id,summary,detail"
+    ]
+
+
+def events_of(text: str) -> list[tuple[str, dict]]:
+    """Server-sent events as (event, data)."""
+    import json
+
+    found = []
+    for block in text.strip().split("\n\n"):
+        kind = next(line[7:] for line in block.splitlines() if line.startswith("event: "))
+        data = next(line[6:] for line in block.splitlines() if line.startswith("data: "))
+        found.append((kind, json.loads(data)))
+    return found
+
+
+def test_each_agent_step_streams_as_it_finishes(client, indexed, generator, tmp_path):
+    from .test_conversation import finding
+
+    load(client, tmp_path)
+    generator.structured_replies = [
+        analysis(), decision(), draft("PAY NOW. " + draft()["body"]), draft(),
+        review(finding()), draft(), review(),
+    ]  # fmt: skip
+    response = client.post("/api/admin/customers/1/conversation/stream")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    events = events_of(response.text)
+    steps = [(d["node"], d["round"]) for kind, d in events if kind == "step"]
+    assert steps[:3] == [("case_analyst", None), ("decision_agent", None), ("writer", 1)]
+    assert ("guardrails", 1) in steps and ("red_team", 2) in steps and steps[-1] == ("red_team", 3)
+    summaries = [d["summary"] for kind, d in events if kind == "step"]
+    assert any("broke 1 fixed rule" in s for s in summaries)
+    assert "The draft passed the fixed rules." in summaries
+    kind, done = events[-1]
+    assert kind == "done" and done["messages"][0]["status"] == "pending_approval"
+
+
+def test_a_streamed_failure_ends_with_an_error_event(client, indexed, generator, tmp_path):
+    load(client, tmp_path)
+    start(client, generator, analysis(), decision(), draft(), review())
+    events = events_of(client.post("/api/admin/customers/1/conversation/stream").text)
+    assert events == [
+        (
+            "error",
+            {
+                "status": 409,
+                "code": "conversation_open",
+                "message": "This customer already has an open conversation.",
+            },
+        )
+    ]
+
+
+def test_the_collections_dashboard_counts_the_work(client, indexed, generator, tmp_path):
+    from datetime import date
+
+    from .test_conversation import finding
+
+    load(client, tmp_path)
+    empty = client.get("/api/admin/collections/summary").json()
+    assert empty["work"]["pending_approval"] == 0 and empty["promises"]["kept_rate"] is None
+    assert len(empty["activity"]["sent_by_day"]) == 14
+
+    # One conversation: a first email (rewritten once by the Red Team) sent, a promise kept,
+    # then closed.
+    give_email(client)
+    body = start(
+        client, generator, analysis(), decision(), draft(), review(finding()), draft(), review()
+    ).json()
+    message_id = body["messages"][0]["id"]
+    client.post(f"/api/admin/messages/{message_id}/approve", json={})
+    generator.structured_replies = [plan()]
+    client.post(f"/api/admin/messages/{message_id}/send")
+    today = date.today().isoformat()
+    client.post("/api/admin/customers/1/promises", json={"due_on": today, "amount": 1000})
+    client.post("/api/admin/customers/1/payments", json={"amount": 1000, "paid_on": today})
+    client.post(f"/api/admin/conversations/{body['id']}/close", json={"note": "Paid."})
+
+    s = client.get("/api/admin/collections/summary").json()
+    assert s["conversations"]["closed"] == 1
+    assert s["conversations"]["emails_per_resolution"] == 1.0
+    assert (s["promises"]["kept"], s["promises"]["kept_rate"]) == (1, 1.0)
+    assert s["promises"]["collected"] == 1000
+    assert s["compliance"]["first_round_pass_rate"] == 0.0  # it passed on the second round
+    assert s["compliance"]["average_rounds"] == 2.0
+    assert s["activity"]["emails_sent"] == 1
+    assert s["activity"]["sent_by_day"][-1]["emails"] == 1

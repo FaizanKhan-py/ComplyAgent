@@ -7,6 +7,7 @@ import { ErrorState, Loading } from './components/ui'
 import { AddCustomer } from './pages/AddCustomer'
 import { Assistant } from './pages/Assistant'
 import { AuditTrail } from './pages/AuditTrail'
+import { CollectionsDashboard } from './pages/CollectionsDashboard'
 import { CustomerRecord } from './pages/CustomerRecord'
 import { Customers } from './pages/Customers'
 import { Documents } from './pages/Documents'
@@ -78,6 +79,7 @@ export default function App() {
             <Route path="customers/new" element={<AddCustomer />} />
             <Route path="customers/:customerId" element={<CustomerRecord />} />
             <Route path="predict" element={<PredictDataset />} />
+            <Route path="collections" element={<CollectionsDashboard />} />
             <Route path="approvals" element={<Inbox />} />
             <Route path="follow-ups" element={<FollowUps />} />
             <Route path="audit" element={<AuditTrail />} />

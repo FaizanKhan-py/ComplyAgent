@@ -14,9 +14,15 @@ the table has no foreign keys, so deleting a customer does not delete their hist
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 
 from .db import Database, now_iso
+
+EXPORT_COLUMNS = ("id", "created_at", "actor", "event", "customer_id", "conversation_id",
+                  "message_id", "summary", "detail")  # fmt: skip
+EXPORT_LIMIT = 100_000
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -80,6 +86,38 @@ class AuditLog:
         for e in events:
             self.record(e["actor"], e["event"], e["summary"], detail=e.get("detail"), **ids)
 
+    def export_csv(
+        self,
+        customer_id: int | None = None,
+        event: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> tuple[str, int]:
+        """The trail as CSV, oldest first, for a compliance review: (text, rows). `since` and
+        `until` are dates (YYYY-MM-DD, UTC), both included."""
+        where, args = [], []
+        if customer_id is not None:
+            where.append("customer_id = ?")
+            args.append(customer_id)
+        if event:
+            where.append("(event = ? OR event LIKE ?)")
+            args += [event, f"{event}.%"]
+        if since:
+            where.append("created_at >= ?")
+            args.append(since)
+        if until:
+            where.append("created_at < ?")
+            args.append(f"{until}T99")  # every time on that day sorts before this
+        sql = "SELECT * FROM audit_log" + (f" WHERE {' AND '.join(where)}" if where else "")
+        with self.db.connect() as conn:
+            rows = conn.execute(f"{sql} ORDER BY id LIMIT ?", (*args, EXPORT_LIMIT)).fetchall()
+        out = io.StringIO()
+        writer = csv.writer(out)
+        writer.writerow(EXPORT_COLUMNS)
+        for row in rows:
+            writer.writerow([_cell(row[c]) for c in EXPORT_COLUMNS])
+        return out.getvalue(), len(rows)
+
     def list(
         self,
         customer_id: int | None = None,
@@ -109,3 +147,12 @@ class AuditLog:
         return [
             {**dict(r), "detail": json.loads(r["detail"]) if r["detail"] else None} for r in rows
         ]
+
+
+def _cell(value) -> str:
+    """A CSV cell a spreadsheet will not run: text that starts like a formula (customer emails
+    end up in summaries) gets a leading apostrophe."""
+    if value is None:
+        return ""
+    text = str(value)
+    return f"'{text}" if text[:1] in ("=", "+", "-", "@", "\t", "\r") else text

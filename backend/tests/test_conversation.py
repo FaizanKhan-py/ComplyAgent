@@ -20,24 +20,9 @@ from app.langchain.prompts import (
 )
 
 from .test_guidance import load
-from .test_messages import EMAIL, decision, draft
+from .test_messages import EMAIL, analysis, decision, draft, review
 
 START = "/api/admin/customers/{}/conversation"
-
-
-def analysis(fact_ids=("F1", "F7")) -> dict:
-    return {
-        "summary": "Two months late and paying only part of each bill.",
-        "situation": "partial_payer",
-        "urgency": "medium",
-        "patterns": [{"text": "Pays part of each bill.", "fact_ids": list(fact_ids)}],
-        "care_flags": [],
-        "open_questions": ["Can the customer pay the full amount?"],
-    }
-
-
-def review(*findings) -> dict:
-    return {"findings": list(findings)}
 
 
 def finding(quote="Please call", target="message", severity="blocker") -> dict:

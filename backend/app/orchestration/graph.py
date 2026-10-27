@@ -17,11 +17,16 @@ or days later, so that state lives in the database (decisions/conversation.py), 
 running graph. Each node adds what it did to `trace`, which becomes the audit trail.
 
 GET /api/admin/agents/graph returns this graph as a Mermaid diagram (drawn by LangGraph).
+
+Progress: while PROGRESS holds a function, every node that finishes is reported to it as it
+happens (graph.stream). The streaming endpoints set it, so the page shows each real step.
 """
 
 from __future__ import annotations
 
 import operator
+from collections.abc import Callable
+from contextvars import ContextVar
 from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -33,6 +38,12 @@ from ..decisions.decision import recommend
 from ..langchain.prompts import MESSAGE_PROMPT
 
 RECURSION_LIMIT = 60  # nodes per run: MAX_ROUNDS rounds of three nodes, with room to spare
+
+# Receives {node, actor, summary, round} for each node as it finishes; None: nobody listens.
+PROGRESS: ContextVar[Callable[[dict], None] | None] = ContextVar("progress", default=None)
+
+# What a node did when it left nothing in the trace (a draft that passed the fixed rules).
+QUIET_STEPS = {"guardrails": ("Guardrails", "The draft passed the fixed rules.")}
 
 
 class PipelineState(TypedDict, total=False):
@@ -383,10 +394,35 @@ def build(kb, portfolio, generator):
 
 
 def _invoke(graph, state: dict) -> dict:
-    return graph.invoke(
-        {"rounds": [], "trace": [], "lessons": [], "status": "running", **state},
-        {"recursion_limit": RECURSION_LIMIT},
-    )
+    initial = {"rounds": [], "trace": [], "lessons": [], "status": "running", **state}
+    config = {"recursion_limit": RECURSION_LIMIT}
+    report = PROGRESS.get()
+    if report is None:
+        return graph.invoke(initial, config)
+    final: dict = initial
+    current = None  # the round the writer last started; the checks after it belong to it
+    for mode, chunk in graph.stream(initial, config, stream_mode=["updates", "values"]):
+        if mode == "values":
+            final = chunk
+            continue
+        for node, update in chunk.items():
+            update = update or {}
+            current = update.get("round", current)
+            for step in _steps(node, update, current):
+                report(step)
+    return final
+
+
+def _steps(node: str, update: dict, current: int | None) -> list[dict]:
+    """What a finished node did, as the page shows it."""
+    events = update.get("trace") or []
+    if not events and node in QUIET_STEPS:
+        actor, summary = QUIET_STEPS[node]
+        events = [{"actor": actor, "summary": summary}]
+    return [
+        {"node": node, "actor": e["actor"], "summary": e["summary"], "round": current}
+        for e in events
+    ]
 
 
 def run_first_email(kb, portfolio, generator, customer_id: int,

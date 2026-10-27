@@ -360,23 +360,6 @@ export interface PolicyPassage {
   text: string
 }
 
-export interface CustomerMessage {
-  customer_id: number
-  /** Sets the tone of the email; never stated in it. */
-  risk_level: RiskLevel | null
-  status: 'draft' | 'not_written'
-  /** Why no draft was written, when status is not_written. */
-  reason: string | null
-  decision: Recommendation | null
-  subject: string | null
-  body: string | null
-  sources: PolicyPassage[]
-  /** Guardrails the draft passed. */
-  checks: string[]
-  /** Rule breaks in the first draft, fixed on the second try. */
-  corrected: string[]
-  model: string | null
-}
 
 // --- AI Assistant (LangChain agent) ----------------------------------------------------------
 
@@ -669,4 +652,41 @@ export interface MailboxPoll {
   matched: number[]
   unmatched: number
   failed: { conversation_id: number; error: string }[]
+}
+
+// --- Collections dashboard --------------------------------------------------------------------
+
+export interface CollectionsDashboard {
+  generated_at: string
+  work: {
+    pending_approval: number
+    awaiting_supervisor: number
+    blocked: number
+    approved_unsent: number
+    escalated: number
+    follow_ups_due: number
+  }
+  conversations: {
+    open: number
+    escalated: number
+    closed: number
+    /** Emails sent per closed conversation, on average. */
+    emails_per_resolution: number | null
+    recent_escalations: { id: number; customer_id: number; status_reason: string | null; updated_at: string }[]
+  }
+  promises: { open: number; kept: number; broken: number; kept_rate: number | null; collected: number }
+  compliance: {
+    drafts_reviewed: number
+    first_round_pass_rate: number | null
+    average_rounds: number | null
+    sends_refused: number
+    do_not_contact: number
+  }
+  activity: {
+    emails_sent: number
+    emails_delivered: number
+    follow_ups_scheduled: number
+    sent_by_day: { day: string; emails: number }[]
+    intents: Record<string, number>
+  }
 }

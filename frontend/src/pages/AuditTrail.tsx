@@ -40,6 +40,22 @@ export function AuditTrail() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<Error | null>(null)
   const [open, setOpen] = useState<number | null>(null)
+  const [since, setSince] = useState('')
+  const [until, setUntil] = useState('')
+  const [exporting, setExporting] = useState(false)
+  const [exportError, setExportError] = useState('')
+
+  async function exportCsv() {
+    setExporting(true)
+    setExportError('')
+    try {
+      await api.exportAudit({ customer_id: customerId, event: group || undefined, since: since || undefined, until: until || undefined })
+    } catch (err) {
+      setExportError(errorMessage(err))
+    } finally {
+      setExporting(false)
+    }
+  }
   const customerId = /^\d+$/.test(customer.trim()) ? Number(customer.trim()) : undefined
 
   useEffect(() => {
@@ -76,7 +92,14 @@ export function AuditTrail() {
         eyebrow="Compliance record"
         title="Audit Trail"
         description="Every agent step and every officer action, newest first. Entries cannot be changed or deleted."
+        actions={
+          <button type="button" className="btn" disabled={exporting} onClick={() => void exportCsv()}>
+            {exporting ? <span className="spinner spinner-sm" aria-hidden="true" /> : null}
+            Export CSV
+          </button>
+        }
       />
+      {exportError ? <p className="field-error">Could not export: {exportError}</p> : null}
       <section className="card" aria-label="Audit events">
         <div className="filters">
           <label className="field">
@@ -92,13 +115,21 @@ export function AuditTrail() {
           </label>
           <label className="field">
             <span>Show</span>
-            <select value={group} onChange={(e) => setGroup(e.target.value)}>
+            <select value={group} onChange={(e) => setGroup(e.target.value)} aria-label="Show">
               {EVENT_GROUPS.map((g) => (
                 <option key={g.value} value={g.value}>
                   {g.label}
                 </option>
               ))}
             </select>
+          </label>
+          <label className="field">
+            <span>Export from</span>
+            <input type="date" value={since} onChange={(e) => setSince(e.target.value)} />
+          </label>
+          <label className="field">
+            <span>Export to</span>
+            <input type="date" value={until} onChange={(e) => setUntil(e.target.value)} />
           </label>
         </div>
         {loading ? (

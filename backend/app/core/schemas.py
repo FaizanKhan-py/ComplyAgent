@@ -385,20 +385,6 @@ class CustomerRecommendation(BaseModel):
     )
 
 
-class CustomerMessage(BaseModel):
-    customer_id: int
-    risk_level: RiskLevel | None = Field(description="Sets the tone; never stated in the email.")
-    status: Literal["draft", "not_written"]
-    reason: str | None = Field(description="Why no draft was written, when status is not_written.")
-    decision: Recommendation | None
-    subject: str | None
-    body: str | None
-    sources: list[PolicyPassage]
-    checks: list[str] = Field(description="Guardrails the draft passed.")
-    corrected: list[str] = Field(description="Rule breaks in the first draft, fixed on retry.")
-    model: str | None
-
-
 class PredictionModelInfo(BaseModel):
     available: bool
     message: str | None
@@ -775,6 +761,66 @@ class MailboxPoll(BaseModel):
     matched: list[int] = Field(description="Conversations that received a reply.")
     unmatched: int = Field(description="Emails left unread for a person.")
     failed: list[dict]
+
+
+# --- the collections dashboard --------------------------------------------------------------
+
+
+class DashboardWork(BaseModel):
+    pending_approval: int
+    awaiting_supervisor: int
+    blocked: int
+    approved_unsent: int
+    escalated: int
+    follow_ups_due: int
+
+
+class DashboardConversations(BaseModel):
+    open: int
+    escalated: int
+    closed: int
+    emails_per_resolution: float | None = Field(
+        description="Emails sent per closed conversation, on average."
+    )
+    recent_escalations: list[InboxEscalation]
+
+
+class DashboardPromises(BaseModel):
+    open: int
+    kept: int
+    broken: int
+    kept_rate: float | None = Field(description="Kept / (kept + broken).")
+    collected: int = Field(description="NT$ recorded in the ledger as paid.")
+
+
+class DashboardCompliance(BaseModel):
+    drafts_reviewed: int
+    first_round_pass_rate: float | None
+    average_rounds: float | None
+    sends_refused: int = Field(description="Sends the contact rules refused.")
+    do_not_contact: int
+
+
+class DayCount(BaseModel):
+    day: str
+    emails: int
+
+
+class DashboardActivity(BaseModel):
+    emails_sent: int
+    emails_delivered: int
+    follow_ups_scheduled: int
+    sent_by_day: list[DayCount]
+    intents: dict[str, int]
+
+
+class CollectionsDashboard(BaseModel):
+    generated_at: str
+    work: DashboardWork
+    conversations: DashboardConversations
+    promises: DashboardPromises
+    compliance: DashboardCompliance
+    activity: DashboardActivity
 
 
 Conversation.model_rebuild()  # it refers to FollowUp, defined after it
