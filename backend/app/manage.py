@@ -8,6 +8,7 @@ Run from the backend directory with the virtualenv active:
     python -m app.manage list-users
     python -m app.manage import-customers [--csv path/to/data.csv] [--replace]
     python -m app.manage train-model
+    python -m app.manage generate-collections [--seed 42] [--as-of 2026-01-31] [--replace]
     python -m app.manage add-documents ../sample_policies/*_policy.*
     python -m app.manage evaluate-rag
 
@@ -20,11 +21,12 @@ from __future__ import annotations
 import argparse
 import getpass
 import sys
+from datetime import date
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-from . import auth, evaluation, risk_model
+from . import auth, collections_data, evaluation, risk_model
 from .config import BACKEND_DIR, Settings
 from .db import Database, EmailTaken
 from .embeddings import build_embedder
@@ -121,6 +123,12 @@ def main(
     data.add_argument("--csv", type=Path, help="a downloaded copy; otherwise it is downloaded")
     data.add_argument("--replace", action="store_true", help="delete the loaded data first")
     commands.add_parser("train-model", help="train the risk model and score every customer")
+    cases = commands.add_parser(
+        "generate-collections", help="make synthetic collections data for overdue customers"
+    )
+    cases.add_argument("--seed", type=int, default=42)
+    cases.add_argument("--as-of", type=date.fromisoformat, help="snapshot date, YYYY-MM-DD")
+    cases.add_argument("--replace", action="store_true", help="delete the generated data first")
     docs = commands.add_parser("add-documents", help="upload and index policy documents")
     docs.add_argument("files", nargs="+", type=Path)
     check = commands.add_parser("evaluate-rag", help="ask the test questions and score the answers")
@@ -143,6 +151,17 @@ def main(
             count = Portfolio(db).import_data(args.csv, replace=args.replace)
             print(f"Imported {count} customers from {args.csv or DATA_URL}.")
             print("Next, score them with: python -m app.manage train-model")
+            return 0
+        if args.command == "generate-collections":
+            result = collections_data.generate(db, args.as_of, args.seed, args.replace)
+            print(f"Created {result['cases']} collections cases as of {result['as_of']}.")
+            for profile, count in result["profiles"].items():
+                print(f"  {profile:<12} {count}")
+            print(
+                f"Also: {result['contact_consent']} consent rows, "
+                f"{result['communication_history']} past contacts, "
+                f"{result['promises_to_pay']} promises, {result['disputes']} disputes."
+            )
             return 0
         if args.command in ("add-documents", "evaluate-rag"):
             return _knowledge_base_command(args, kb or _build_kb(settings, db))
@@ -180,7 +199,7 @@ def main(
             print(f"Password changed for {email}. Their open sessions were ended.")
     except auth.AuthError as exc:
         raise SystemExit(exc.message) from exc
-    except (ImportFailed, risk_model.TrainingFailed) as exc:
+    except (ImportFailed, risk_model.TrainingFailed, collections_data.NoCustomers) as exc:
         raise SystemExit(str(exc)) from exc
     except EmailTaken:
         raise SystemExit("That email address already has an account.") from None
