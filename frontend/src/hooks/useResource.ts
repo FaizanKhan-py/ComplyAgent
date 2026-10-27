@@ -24,7 +24,6 @@ export function useResource<T>(
     fetcherRef.current = fetcher
   })
 
-  // State is only set from the promise callbacks, never synchronously.
   const load = useCallback(
     () =>
       fetcherRef
