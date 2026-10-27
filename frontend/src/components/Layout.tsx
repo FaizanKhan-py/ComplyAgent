@@ -3,11 +3,16 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth'
 import { useActiveRect } from '../lib/motion'
 import { BrandMark } from './AuthShell'
+import { ChatWidget } from './ChatWidget'
 
 const NAV = [
   { to: '/', label: 'Risk Dashboard', icon: 'chart', end: true, adminOnly: true },
   { to: '/customers', label: 'Customer Records', icon: 'people', end: false, adminOnly: true },
+  { to: '/collections', label: 'Collections', icon: 'gauge', end: false, adminOnly: true },
+  { to: '/approvals', label: 'Approvals', icon: 'check', end: false, adminOnly: true },
   { to: '/predict', label: 'Predict Dataset', icon: 'upload', end: false, adminOnly: true },
+  { to: '/follow-ups', label: 'Follow-ups', icon: 'clock', end: false, adminOnly: true },
+  { to: '/audit', label: 'Audit Trail', icon: 'list', end: false, adminOnly: true },
   { to: '/assistant', label: 'AI Assistant', icon: 'chat', end: false, adminOnly: false },
 ] as const
 
@@ -17,6 +22,10 @@ const ICON_PATHS = {
     'M16 20v-1.5a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4V20m6.5-9.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm11.5 9.5v-1.5a4 4 0 0 0-3-3.87m-1.5-11a3.5 3.5 0 0 1 0 6.75',
   upload: 'M12 15V4m0 0-4 4m4-4 4 4M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3',
   chat: 'M20.5 11.5a8 8 0 0 1-11.7 7.1L3.5 20l1.4-5.3a8 8 0 1 1 15.6-3.2Z',
+  check: 'M4 12.5 9 17.5 20 6.5',
+  gauge: 'M4 16a8 8 0 1 1 16 0M12 16l4-5',
+  clock: 'M12 7v5l3 2m6-2a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z',
+  list: 'M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01',
   menu: 'M4 6h16M4 12h16M4 18h16',
   close: 'M6 6l12 12M18 6 6 18',
 }
@@ -141,6 +150,8 @@ export function Layout() {
           <Outlet />
         </div>
       </main>
+      {/* The full-page chat is the same assistant, so the pop-up hides there. */}
+      <ChatWidget isAdmin={isAdmin} hidden={pathname === '/assistant'} />
     </div>
   )
 }

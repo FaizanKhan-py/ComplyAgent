@@ -1,7 +1,7 @@
 import pytest
 
-from app.chunking import chunk_pages, split_text
-from app.extraction import (
+from app.rag.chunking import chunk_pages, split_text
+from app.rag.extraction import (
     ExtractionError,
     Page,
     ValidationError,
@@ -114,3 +114,94 @@ def test_chunks_keep_page_number_and_running_index():
     assert [c.index for c in chunks] == list(range(len(chunks)))
     assert {c.page_number for c in chunks} == {1, 2}
     assert all(("Alpha" in c.text) == (c.page_number == 1) for c in chunks)
+
+
+def _docx(body: str) -> bytes:
+    """A minimal Word file: just the parts a reader needs."""
+    import io
+    import zipfile
+
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body>{body}</w:body></w:document>"
+    )
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("word/document.xml", xml)
+    return out.getvalue()
+
+
+def _docx_with_doctype() -> bytes:
+    import io
+    import zipfile
+
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as archive:
+        archive.writestr(
+            "word/document.xml",
+            '<!DOCTYPE x [<!ENTITY a "aaaa">]>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body><w:p><w:r><w:t>&a;</w:t></w:r></w:p></w:body></w:document>",
+        )
+    return out.getvalue()
+
+
+def test_word_documents_keep_paragraphs_and_table_rows_in_reading_order():
+    body = (
+        "<w:p><w:r><w:t>Customer Messaging Policy</w:t></w:r></w:p>"
+        "<w:p><w:r><w:t>An SMS has at most </w:t></w:r><w:r><w:t>300 characters.</w:t></w:r></w:p>"
+        "<w:tbl>"
+        "<w:tr><w:tc><w:p><w:r><w:t>Stage</w:t></w:r></w:p></w:tc>"
+        "<w:tc><w:p><w:r><w:t>Tone</w:t></w:r></w:p></w:tc></w:tr>"
+        "<w:tr><w:tc><w:p><w:r><w:t>Stage 2</w:t></w:r></w:p></w:tc>"
+        "<w:tc><w:p><w:r><w:t>Supportive</w:t></w:r>"
+        "<w:r><w:tab/><w:t>and kind</w:t></w:r></w:p></w:tc></w:tr>"
+        "</w:tbl>"
+        "<w:p><w:r><w:t>After the table.</w:t></w:r></w:p>"
+    )
+    data = _docx(body)
+    validate_content("docx", data)
+    [page] = extract_pages("docx", data)
+    assert page.number is None
+    assert page.text == (
+        "Customer Messaging Policy\n\nAn SMS has at most 300 characters.\n\n"
+        "Stage | Tone\n\nStage 2 | Supportive and kind\n\nAfter the table."
+    )
+
+
+def test_broken_or_hostile_word_files_are_refused():
+    with pytest.raises(ValidationError):
+        validate_content("docx", b"just some text")
+    with pytest.raises(ExtractionError, match="could not be opened"):
+        extract_pages("docx", b"PK\x03\x04 not really a zip")
+    import io
+    import zipfile
+
+    no_body = io.BytesIO()
+    with zipfile.ZipFile(no_body, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+    with pytest.raises(ExtractionError, match="no document body"):
+        extract_pages("docx", no_body.getvalue())
+    # An entity declaration is how "billion laughs" XML bombs start; Word never writes one.
+    with pytest.raises(ExtractionError, match="unsupported XML"):
+        extract_pages("docx", _docx_with_doctype())
+    with pytest.raises(ExtractionError, match="No extractable text"):
+        extract_pages("docx", _docx("<w:p/>"))
+
+
+def test_the_sample_messaging_policy_is_readable():
+    from pathlib import Path
+
+    data = (
+        Path(__file__).resolve().parents[2] / "sample_policies" / "messaging_policy.docx"
+    ).read_bytes()
+    validate_content("docx", data)
+    text = extract_pages("docx", data)[0].text
+    assert "Policy ID | MG-04" in text
+    assert (
+        "Stage 2: 31 to 60 days overdue | Collections message tone in Stage 2: supportive" in text
+    )
+    assert "Subject: ComplyAgent Finance: about your account\nDear {first_name}," in text
+    assert "SMS | A collections SMS is at most 300 characters long." in text

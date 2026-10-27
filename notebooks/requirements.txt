@@ -1,0 +1,18 @@
+# To run Data_pipeline_and_Modeling.ipynb. Use the backend's virtualenv, so the saved model and the
+# backend use the same xgboost:
+#   cd backend
+#   .venv\Scripts\pip install -r ..\notebooks\requirements.txt
+#   .venv\Scripts\python -m ipykernel install --sys-prefix --name complyagent
+#   .venv\Scripts\python -m nbconvert --to notebook --execute --inplace --ExecutePreprocessor.kernel_name=complyagent ..\notebooks\Data_pipeline_and_Modeling.ipynb
+# (or open it in Jupyter / VS Code and pick the "complyagent" kernel)
+pandas>=2.2
+matplotlib>=3.8
+seaborn>=0.13
+scipy>=1.11
+scikit-learn>=1.5
+xgboost>=2.1
+xlrd>=2.0
+ipykernel>=6.29
+nbconvert>=7.16
+# Only when ../default_of_credit_card_clients.xls is missing (the data is then downloaded):
+ucimlrepo>=0.0.7

@@ -1,0 +1,12 @@
+**/.venv
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+frontend/dist
+backend/storage
+backend/.env
+**/.env
+notebooks
+default_of_credit_card_clients.xls
+.git

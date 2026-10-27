@@ -65,6 +65,12 @@ export interface AdminConfig {
   llm_model: string | null
   default_top_k: number
   default_min_score: number
+  /** graph: emails really go out through Microsoft 365, and replies come in. */
+  email_provider?: 'none' | 'graph'
+  /** Outside production, every email goes to this address instead of the customer. */
+  email_redirect_to?: string | null
+  /** The contact rules every send must follow. */
+  contact_rules?: string
 }
 
 export interface ChatMessage {
@@ -122,6 +128,8 @@ export interface User {
   email: string
   full_name: string
   role: Role
+  /** A team lead: gives the second approval that payment-plan emails need. */
+  supervisor?: boolean
   created_at: string
   last_login_at: string | null
 }
@@ -181,6 +189,8 @@ export interface PortfolioSummary {
 
 export interface CustomerSummary {
   customer_id: number
+  /** Where collections emails go; null when none is on record. */
+  email: string | null
   limit_bal: number
   age: number
   sex: string
@@ -208,6 +218,8 @@ export interface CustomerQuery {
   search?: string
   risk?: RiskLevel
   actual?: 'defaulted' | 'paid'
+  /** overdue: late in the latest month (Sep 2005); current: not late. */
+  payment?: 'overdue' | 'current'
   sort?: CustomerSort
   order?: 'asc' | 'desc'
   page?: number
@@ -222,7 +234,16 @@ export interface MonthlyRecord {
   pay_amt: number
 }
 
+export interface DoNotContact {
+  reason: string
+  /** An officer, or the Communication Agent. */
+  set_by: string
+  set_at: string
+}
+
 export interface CustomerDetail extends CustomerSummary {
+  /** The customer asked not to be contacted: no email is written or sent. */
+  do_not_contact?: DoNotContact | null
   on_time_payment_rate: number | null
   avg_payment_delay: number | null
   avg_credit_utilization: number | null
@@ -240,6 +261,7 @@ export interface MonthInput {
 export interface CustomerCreate {
   /** Leave out to use the next free number. */
   customer_id?: number
+  email?: string
   limit_bal: number
   sex: 'Male' | 'Female'
   education_code: number
@@ -314,4 +336,357 @@ export interface DatasetPrediction {
   predictions: RowPrediction[]
   /** The uploaded file with the target column filled in, ready to download. */
   csv: string
+}
+
+// --- Decision Agent and message drafts -------------------------------------------------------
+
+export type DecisionAction = 'send_reminder' | 'offer_payment_plan' | 'schedule_call' | 'escalate_to_human' | 'no_contact'
+export type DecisionChannel = 'sms' | 'email' | 'phone' | 'none'
+
+export interface Recommendation {
+  action: DecisionAction
+  channel: DecisionChannel
+  priority: 'low' | 'medium' | 'high' | 'critical'
+  reasons: { text: string; fact_ids: string[]; source_ids: number[] }[]
+  needs_human_review: boolean
+}
+
+export interface PolicyPassage {
+  number: number
+  document_id: string
+  filename: string
+  page_number: number | null
+  score: number
+  text: string
+}
+
+
+// --- AI Assistant (LangChain agent) ----------------------------------------------------------
+
+export interface AssistantRequest {
+  message: string
+  /** Continue a conversation; null starts a new one. */
+  conversation_id: string | null
+}
+
+/** One reply: shaped like a policy answer (text, [n] sources), plus the tools the agent used. */
+export interface AssistantReply {
+  answer: string
+  answer_mode: AnswerMode
+  insufficient_evidence: boolean
+  sources: Source[]
+  model: string | null
+  warning: string | null
+  conversation_id: string
+  /** The tools the assistant called, in order, with their arguments as JSON. */
+  steps: { tool: string; input: string }[]
+}
+
+// --- Collections conversations: every agent, the email thread, the officer's approval -------
+
+export interface CaseFinding {
+  text: string
+  fact_ids: string[]
+}
+
+export interface CaseAnalysis {
+  summary: string
+  situation:
+    | 'paid_up'
+    | 'early_arrears'
+    | 'persistent_arrears'
+    | 'worsening'
+    | 'improving'
+    | 'partial_payer'
+    | 'stopped_paying'
+  urgency: 'low' | 'medium' | 'high' | 'critical'
+  patterns: CaseFinding[]
+  care_flags: CaseFinding[]
+  open_questions: string[]
+}
+
+export interface CaseFile {
+  analysed_by: 'rule' | 'model'
+  model: string | null
+  facts: { id: string; text: string }[]
+  analysis: CaseAnalysis
+}
+
+export interface RedTeamFinding {
+  target: 'message' | 'decision'
+  severity: 'blocker' | 'warning'
+  issue: string
+  quote: string
+  source_ids: number[]
+  fix: string
+}
+
+export interface ReviewRound {
+  round: number
+  checked_by: 'guardrails' | 'red_team'
+  passed: boolean
+  issues: string[]
+  findings: RedTeamFinding[]
+  /** Red Team findings dropped because they quoted words that are not in the email. */
+  dropped: number
+  decision_revised: { from: string; to: string } | null
+}
+
+export interface DraftReview {
+  rounds: ReviewRound[]
+  checks: string[]
+  sources: PolicyPassage[]
+  decision: Recommendation
+}
+
+export type MessageStatus =
+  | 'pending_approval'
+  | 'awaiting_supervisor'
+  | 'blocked'
+  | 'approved'
+  | 'rejected'
+  | 'superseded'
+  | 'sent'
+  | 'received'
+
+export interface ConversationMessage {
+  id: number
+  direction: 'outbound' | 'inbound'
+  status: MessageStatus
+  subject: string | null
+  body: string
+  /** Inbound: what the customer's email is about. */
+  intent: string | null
+  intent_summary: string | null
+  review: DraftReview | null
+  /** An officer changed the agent's text before approving it. */
+  edited: boolean
+  reviewed_by: string | null
+  reviewed_at: string | null
+  review_note: string | null
+  sent_by: string | null
+  sent_at: string | null
+  created_at: string
+  /** Four eyes: a team lead must give the second approval. */
+  needs_supervisor?: boolean
+  first_approved_by?: string | null
+  first_approved_at?: string | null
+  /** Really emailed through Microsoft 365. */
+  delivered?: boolean
+}
+
+export interface Conversation {
+  id: number
+  customer_id: number
+  status: 'open' | 'escalated' | 'closed'
+  status_reason: string | null
+  case_file: CaseFile
+  decision: Recommendation
+  created_by: string
+  created_at: string
+  updated_at: string
+  messages: ConversationMessage[]
+  /** What the Follow-up Agent planned. */
+  follow_ups: FollowUp[]
+}
+
+export interface FollowUp {
+  id: number
+  conversation_id: number
+  customer_id: number
+  due_at: string
+  action: 'send_reminder' | 'schedule_call' | 'escalate_to_human'
+  reason: string
+  status: 'scheduled' | 'done' | 'cancelled'
+  outcome: string | null
+  created_at: string
+  done_at: string | null
+}
+
+export interface FollowUpRun {
+  due: number
+  done: number[]
+  failed: { id: number; error: string }[]
+}
+
+// --- Audit trail ------------------------------------------------------------------------------
+
+export interface AuditEvent {
+  id: number
+  created_at: string
+  /** A person's email, or the agent's name. */
+  actor: string
+  event: string
+  customer_id: number | null
+  conversation_id: number | null
+  message_id: number | null
+  summary: string
+  detail: Record<string, unknown> | null
+}
+
+export interface AuditList {
+  events: AuditEvent[]
+  next_before: number | null
+}
+
+export interface AuditQuery {
+  customer_id?: number
+  event?: string
+  before?: number
+  limit?: number
+}
+
+// --- Counterfactual Simulator -----------------------------------------------------------------
+
+export interface SimulatedOutcome {
+  probability: number
+  risk_level: RiskLevel
+  predicted_default: boolean
+}
+
+export interface Scenario extends SimulatedOutcome {
+  key: string
+  label: string
+  kind: 'behaviour' | 'fairness'
+  /** Probability minus the record's own probability. */
+  change: number
+}
+
+export interface CustomScenario extends SimulatedOutcome {
+  change: number
+  changes: Record<string, number>
+  features: Record<string, number>
+  recommendation: Recommendation | null
+  decision_error: string | null
+}
+
+export interface Simulation {
+  customer_id: number
+  model_name: string | null
+  threshold: number
+  base: SimulatedOutcome
+  /** Personal attributes the model uses (age, sex, education). */
+  personal_inputs?: string[]
+  scenarios: Scenario[]
+  custom: CustomScenario | null
+}
+
+export interface SimulateRequest {
+  repayment_status?: number
+  bill_amt?: number
+  pay_amt?: number
+  limit_bal?: number
+  decide?: boolean
+}
+
+// --- Approvals inbox ----------------------------------------------------------------------------
+
+export interface InboxDraft {
+  id: number
+  conversation_id: number
+  customer_id: number
+  status: 'pending_approval' | 'awaiting_supervisor' | 'blocked' | 'approved'
+  subject: string | null
+  body: string
+  created_at: string
+}
+
+export interface Inbox {
+  drafts: InboxDraft[]
+  escalated: { id: number; customer_id: number; status_reason: string | null; updated_at: string }[]
+  due_follow_ups: FollowUp[]
+  /** Follow-ups that asked an officer to call. */
+  calls: FollowUp[]
+  total: number
+}
+
+// --- Collections ledger -----------------------------------------------------------------------
+
+export interface Payment {
+  id: number
+  customer_id: number
+  amount: number
+  paid_on: string
+  recorded_by: string
+  note: string | null
+  created_at: string
+}
+
+export interface PromiseToPay {
+  id: number
+  customer_id: number
+  conversation_id: number | null
+  /** null: any payment keeps it. */
+  amount: number | null
+  due_on: string
+  status: 'open' | 'kept' | 'broken' | 'cancelled'
+  recorded_by: string
+  created_at: string
+  resolved_at: string | null
+  outcome: string | null
+}
+
+export interface ContactAttempt {
+  id: number
+  customer_id: number
+  conversation_id: number | null
+  channel: 'email' | 'phone' | 'sms'
+  outcome: 'sent' | 'reached' | 'no_answer' | 'voicemail'
+  made_by: string
+  note: string | null
+  made_at: string
+}
+
+export interface Ledger {
+  payments: Payment[]
+  promises: PromiseToPay[]
+  contacts: ContactAttempt[]
+  paid_total: number
+  contact_rules: string
+  /** Why a contact attempt is not allowed right now; empty when it is. */
+  contact_now: string[]
+}
+
+export interface MailboxPoll {
+  fetched: number
+  matched: number[]
+  unmatched: number
+  failed: { conversation_id: number; error: string }[]
+}
+
+// --- Collections dashboard --------------------------------------------------------------------
+
+export interface CollectionsDashboard {
+  generated_at: string
+  work: {
+    pending_approval: number
+    awaiting_supervisor: number
+    blocked: number
+    approved_unsent: number
+    escalated: number
+    follow_ups_due: number
+  }
+  conversations: {
+    open: number
+    escalated: number
+    closed: number
+    /** Emails sent per closed conversation, on average. */
+    emails_per_resolution: number | null
+    recent_escalations: { id: number; customer_id: number; status_reason: string | null; updated_at: string }[]
+  }
+  promises: { open: number; kept: number; broken: number; kept_rate: number | null; collected: number }
+  compliance: {
+    drafts_reviewed: number
+    first_round_pass_rate: number | null
+    average_rounds: number | null
+    sends_refused: number
+    do_not_contact: number
+  }
+  activity: {
+    emails_sent: number
+    emails_delivered: number
+    follow_ups_scheduled: number
+    sent_by_day: { day: string; emails: number }[]
+    intents: Record<string, number>
+  }
 }

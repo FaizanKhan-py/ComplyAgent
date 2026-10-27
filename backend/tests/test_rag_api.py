@@ -1,8 +1,8 @@
 from fastapi.testclient import TestClient
 
-from app.embeddings import HashingEmbedder
-from app.llm import GeneratedAnswer, LLMError, SourcePassage, build_user_message
+from app.langchain.llm import GeneratedAnswer, LLMError, SourcePassage, build_user_message
 from app.main import create_app
+from app.rag.embeddings import HashingEmbedder
 
 from .conftest import AUTH, upload
 from .helpers import BrokenEmbedder, make_pdf

@@ -7,6 +7,7 @@ import { Notice, PageHeader } from '../components/ui'
 import { useResource } from '../hooks/useResource'
 import { errorMessage, formatPercent } from '../lib/format'
 import { repaymentStatus } from '../lib/risk'
+import { emailError } from '../lib/validation'
 
 /** The dataset's six months, most recent first, as the backend labels them. */
 const MONTHS = ['Sep 2005', 'Aug 2005', 'Jul 2005', 'Jun 2005', 'May 2005', 'Apr 2005']
@@ -26,6 +27,7 @@ interface MonthForm {
 
 interface FormState {
   customerId: string
+  email: string
   limit: string
   age: string
   sex: '' | 'Male' | 'Female'
@@ -39,6 +41,7 @@ type Errors = Partial<Record<string, string>>
 
 const EMPTY: FormState = {
   customerId: '',
+  email: '',
   limit: '',
   age: '',
   sex: '',
@@ -51,6 +54,7 @@ const EMPTY: FormState = {
 /** A believable account that has started to slip, to try the form quickly. */
 const SAMPLE: FormState = {
   customerId: '',
+  email: 'sample.customer@example.com',
   limit: '120000',
   age: '38',
   sex: 'Female',
@@ -77,6 +81,7 @@ function validate(form: FormState): Errors {
   const errors: Errors = {}
   const id = form.customerId.trim() ? whole(form.customerId) : null
   if (form.customerId.trim() && (id === null || id < 1)) errors.customerId = 'Use a whole number from 1, or leave it blank.'
+  if (form.email.trim() && emailError(form.email)) errors.email = 'Enter a valid email address, or leave it blank.'
   const limit = whole(form.limit)
   if (limit === null || limit <= 0) errors.limit = 'Enter the credit limit as a whole number above 0.'
   const age = whole(form.age)
@@ -97,6 +102,7 @@ function toRequest(form: FormState): CustomerCreate {
   const id = whole(form.customerId)
   return {
     ...(id !== null ? { customer_id: id } : {}),
+    ...(form.email.trim() ? { email: form.email.trim() } : {}),
     limit_bal: whole(form.limit)!,
     sex: form.sex as CustomerCreate['sex'],
     education_code: Number(form.education),
@@ -217,6 +223,11 @@ export function AddCustomer() {
               <Field label="Customer number" error={errors.customerId} hint="Optional. Blank uses the next free number.">
                 {(props) => (
                   <input {...props} inputMode="numeric" value={form.customerId} placeholder="Next free number" onChange={(e) => set('customerId', e.target.value)} />
+                )}
+              </Field>
+              <Field label="Email" error={errors.email} hint="Optional. Where collections emails go.">
+                {(props) => (
+                  <input {...props} type="email" autoComplete="off" value={form.email} placeholder="name@example.com" onChange={(e) => set('email', e.target.value)} />
                 )}
               </Field>
               <Field label="Credit limit (NT$)" error={errors.limit}>

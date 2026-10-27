@@ -313,7 +313,6 @@ code { background: var(--surface-2); padding: 0.12em 0.4em; border-radius: var(-
 .stat-warn::before { background: var(--ochre); }
 .stat-warn .stat-value { color: var(--ochre); }
 .stat-ok::before { width: 100%; background: var(--primary); }
-.stat-text { font-family: var(--font); font-size: 1rem; font-weight: 650; letter-spacing: 0; }
 .stat-hint { color: var(--muted); font-size: 0.8125rem; }
 .stat-hint a { font-weight: 600; }
 
@@ -418,12 +417,7 @@ textarea { resize: vertical; min-height: 52px; }
 .notice a { color: inherit; font-weight: 650; }
 
 /* ───────────── Lists ───────────── */
-.activity, .health, .uploads, .sources, .turns { list-style: none; margin: 0; padding: 0; }
-.activity li { display: flex; gap: 12px; align-items: flex-start; padding: 11px 0; border-top: 1px solid var(--rule); }
-.activity li:first-child { border-top: 0; }
-.activity .dot { margin-top: 8px; }
-.activity-body { flex: 1; min-width: 0; }
-.activity time { white-space: nowrap; font-family: var(--mono); font-size: 0.75rem; }
+.health, .uploads, .sources, .turns { list-style: none; margin: 0; padding: 0; }
 .health li { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 12px 0; border-top: 1px solid var(--rule); }
 .health li:first-child { border-top: 0; }
 .details { margin: 0; display: flex; flex-direction: column; }
@@ -979,8 +973,6 @@ input[aria-invalid='true'] { border-color: var(--error); box-shadow: 0 0 0 3px v
   .bubble-user { font-size: 1.15rem; }
   .details > div { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .settings-grid { grid-template-columns: minmax(0, 1fr); }
-  .activity li { flex-wrap: wrap; }
-  .activity time { flex-basis: 100%; padding-left: 19px; }
   .composer { position: static; }
   .spectrum-legend { grid-template-columns: minmax(0, 1fr); }
   .spectrum-legend li, .spectrum-legend li + li {
@@ -1019,3 +1011,116 @@ input[aria-invalid='true'] { border-color: var(--error); box-shadow: 0 0 0 3px v
   .spinner { animation-duration: 2.4s !important; animation-iteration-count: infinite !important; }
   .layer { transform: none !important; }
 }
+
+/* Reload, before the session check answers: an empty page, then a spinner if it is slow. */
+.session-check { min-height: 100vh; display: grid; place-items: center; }
+
+/* Customer Records: "All customers / Overdue this month" above the filters. */
+.view-switch { display: flex; flex-direction: column; gap: var(--s2); margin-bottom: var(--s3); }
+.view-switch p { margin: 0; max-width: 70ch; }
+
+/* Customer record: the generated message draft. */
+.message { display: flex; flex-direction: column; gap: var(--s2); padding: var(--s4); border: 1px solid var(--rule-strong); border-left: 3px solid var(--primary); border-radius: 6px; background: var(--surface-2); }
+.message-subject { margin: 0; font-weight: 600; }
+.message-body { margin: 0; white-space: pre-wrap; line-height: 1.55; }
+.message-why h3 { margin: 0 0 var(--s1); font-size: 0.95rem; }
+.message-why ul { margin: 0; padding-left: 1.2em; }
+.checks { list-style: none; padding-left: 0 !important; }
+.checks li::before { content: '✓ '; color: var(--primary); font-weight: 700; }
+.message-sources summary { cursor: pointer; font-weight: 600; }
+.message-sources blockquote { margin: var(--s2) 0 0; padding: var(--s2) var(--s3); border-left: 2px solid var(--rule-strong); }
+.message-sources blockquote p { margin: 4px 0 0; white-space: pre-wrap; font-size: 0.9rem; }
+.message-tags { display: flex; gap: var(--s2); flex-wrap: wrap; }
+.message-preview { white-space: pre-wrap; max-height: 12rem; overflow-y: auto; padding: var(--s2) var(--s3); border: 1px solid var(--rule); border-radius: 4px; font-size: 0.9rem; }
+
+/* Message draft: progress while the email is written. */
+.progress-block { display: flex; flex-direction: column; gap: var(--s3); }
+.progress-block p { margin: 0; }
+.progress { height: 8px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.progress-fill { height: 100%; border-radius: inherit; background: var(--primary); transition: width 0.4s var(--ease); }
+.progress-steps { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s4); margin: 0; padding: 0; list-style: none; font-size: 0.9rem; color: var(--muted); }
+.progress-steps li::before { content: '○ '; }
+.progress-steps .step-done::before { content: '✓ '; color: var(--primary); }
+.progress-steps .step-now { color: var(--text); font-weight: 600; }
+.progress-steps .step-now::before { content: '● '; color: var(--primary); }
+@media (prefers-reduced-motion: reduce) { .progress-fill { transition: none; } }
+
+/* AI Assistant pop-up: a button in the bottom-right corner that opens the chat. */
+.chat-widget { position: fixed; right: 24px; bottom: 24px; z-index: 40; display: flex; flex-direction: column; align-items: flex-end; gap: var(--s3); }
+.chat-widget[hidden] { display: none; }
+.chat-launcher {
+  display: inline-flex; align-items: center; gap: 8px; padding: 12px 18px; border: 1px solid var(--ink); border-radius: 999px;
+  background: var(--primary); color: var(--surface); font-weight: 600; cursor: pointer; box-shadow: 4px 4px 0 var(--rule-strong);
+  transition: background var(--fast), transform var(--fast);
+}
+.chat-launcher:hover { background: var(--primary-hover); }
+.chat-launcher:focus-visible { outline: 2px solid var(--signal); outline-offset: 3px; }
+.chat-panel {
+  display: flex; flex-direction: column; width: min(420px, calc(100vw - 32px)); height: min(640px, calc(100vh - 120px));
+  border: 1px solid var(--ink); border-radius: 10px; background: var(--bg); box-shadow: 6px 6px 0 var(--rule-strong); overflow: hidden;
+}
+.chat-panel[hidden] { display: none; }
+.chat-panel-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--rule-strong); background: var(--surface); }
+.chat-panel-body { flex: 1; overflow-y: auto; padding: var(--s3); }
+.playground-compact { gap: var(--s3); }
+.playground-toolbar { display: flex; justify-content: space-between; align-items: center; gap: var(--s2); }
+.playground-compact .chat { min-height: 200px; padding: 16px; }
+.playground-compact .bubble { padding-left: 40px; }
+.playground-compact .composer { bottom: 0; }
+@media (max-width: 640px) {
+  .chat-widget { right: 16px; bottom: 16px; }
+  .chat-panel { height: calc(100vh - 100px); }
+}
+
+/* Customer record: the collections conversation (case file, email thread, approvals). */
+.case-file { display: flex; flex-direction: column; gap: var(--s3); margin-top: var(--s2); }
+.case-file > p { margin: 0; max-width: 75ch; }
+.thread { display: flex; flex-direction: column; gap: var(--s4); margin: 0; padding: 0; list-style: none; }
+.thread-item { display: flex; flex-direction: column; gap: var(--s2); }
+.thread-in { padding-right: 12%; }
+.thread-out { padding-left: 12%; }
+.thread-old { padding-left: 12%; }
+.thread-head { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+.thread-who { font-weight: 600; font-size: 0.9rem; }
+.message-in { border-left-color: var(--info); background: var(--surface); }
+.thread-edit, .thread-actions, .thread-reply { display: flex; flex-direction: column; gap: var(--s2); }
+.thread-reply { padding-top: var(--s3); border-top: 1px solid var(--rule); }
+.thread-reply h3 { margin: 0; font-size: 1rem; }
+.thread-reply p { margin: 0; }
+.review-rounds { margin: var(--s2) 0 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: var(--s2); }
+.review-rounds ul { margin: 4px 0 0; padding-left: 1.2em; }
+.review-rounds p { margin: 4px 0 0; }
+@media (max-width: 640px) { .thread-in, .thread-out, .thread-old { padding-left: 0; padding-right: 0; } }
+
+/* Follow-up Agent: the next follow-up under the conversation. */
+.follow-up { padding: var(--s3); border: 1px dashed var(--rule-strong); border-radius: 6px; }
+.follow-up p { margin: 0; }
+.follow-up p + p { margin-top: var(--s1); }
+
+/* Audit Trail: the JSON behind an event. */
+.audit-detail { margin: var(--s2) 0 0; padding: var(--s2) var(--s3); max-height: 18rem; overflow: auto; border: 1px solid var(--rule); border-radius: 4px; background: var(--surface-2); font-size: 0.8rem; white-space: pre-wrap; word-break: break-word; }
+
+/* Counterfactual simulator. */
+.simulator-form { display: flex; flex-direction: column; gap: var(--s2); padding-top: var(--s3); border-top: 1px solid var(--rule); }
+.simulator-form h3 { margin: 0; font-size: 1rem; }
+.check { display: inline-flex; align-items: center; gap: 8px; font-size: 0.9rem; }
+.change-up { color: var(--error); font-weight: 600; }
+.change-down { color: var(--ok); font-weight: 600; }
+
+/* Approvals inbox, and the customer's request to stop contact. */
+.inbox-list { display: flex; flex-direction: column; gap: var(--s3); margin: 0; padding: 0; list-style: none; }
+.inbox-list > li { padding-bottom: var(--s3); border-bottom: 1px solid var(--rule); }
+.inbox-list > li:last-child { padding-bottom: 0; border-bottom: 0; }
+.inbox-list p { margin: 4px 0 0; }
+.dnc { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s2); }
+.dnc-form { display: flex; flex-direction: column; gap: var(--s2); margin-top: var(--s2); max-width: 36rem; }
+
+/* Collections ledger on the customer page. */
+.ledger-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s2) var(--s3); padding: var(--s3); border: 1px dashed var(--rule-strong); border-radius: 6px; }
+.ledger-form .field { min-width: 11rem; }
+.ledger-form > p { flex-basis: 100%; margin: 0; }
+
+/* The agents' real steps while they work (streamed from the backend). */
+.live-steps { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; font-size: 0.9rem; }
+.live-steps .step-done::before { content: '✓ '; color: var(--primary); font-weight: 700; }
+.live-steps .step-now { color: var(--muted); display: flex; align-items: center; gap: 6px; }

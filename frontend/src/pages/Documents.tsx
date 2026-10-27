@@ -21,7 +21,7 @@ interface UploadResult {
   message?: string
 }
 
-const FALLBACK_CONFIG = { supported_extensions: ['.pdf', '.txt', '.md'], max_upload_mb: 20 }
+const FALLBACK_CONFIG = { supported_extensions: ['.docx', '.md', '.pdf', '.txt'], max_upload_mb: 20 }
 
 /** Mirrors the server's checks so obvious mistakes fail instantly; the server still decides. */
 function validate(file: File, config: Pick<AdminConfig, 'supported_extensions' | 'max_upload_mb'>) {
@@ -208,7 +208,7 @@ export function Documents() {
           <ErrorState error={documents.error} onRetry={documents.refresh} />
         ) : docs && docs.length === 0 ? (
           <EmptyState title="No documents yet">
-            Upload a PDF, TXT or Markdown policy above to build the knowledge base.
+            Upload a PDF, Word, TXT or Markdown policy above to build the knowledge base.
           </EmptyState>
         ) : docs ? (
           <>

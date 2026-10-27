@@ -4,7 +4,6 @@ import { useActiveRect } from '../lib/motion'
 const TABS = [
   { to: '/assistant', label: 'Chat', end: true },
   { to: '/assistant/documents', label: 'Documents', end: false },
-  { to: '/assistant/knowledge-base', label: 'Knowledge Base', end: false },
 ]
 
 /** The assistant and, for administrators, the policy documents it answers from. */

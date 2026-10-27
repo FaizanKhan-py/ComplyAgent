@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import textwrap
 
-from app.llm import GeneratedAnswer, LLMError
+from app.langchain.llm import GeneratedAnswer, LLMError
 
 
 def make_pdf(pages: list[str]) -> bytes:
@@ -46,21 +46,33 @@ def make_pdf(pages: list[str]) -> bytes:
 
 
 class FakeGenerator:
-    """Stands in for the Claude client. Records what it was asked and returns a scripted answer."""
+    """Stands in for the LangChain generator: records requests, returns scripted answers."""
 
     provider = "fake"
     model = "fake-llm"
+    chat_model = None  # a LangChain chat model, set by the agent tests
 
     def __init__(self) -> None:
         self.calls: list[dict] = []
         self.reply = GeneratedAnswer("Scripted answer [1].", False, [1])
         self.error: LLMError | None = None
+        self.structured_calls: list[dict] = []
+        self.structured_replies: list[dict] = []
 
     def generate(self, question, sources, history):
         self.calls.append({"question": question, "sources": sources, "history": history})
         if self.error:
             raise self.error
         return self.reply
+
+    def structured(self, system, user, schema, history=None):
+        """Returns the next of `structured_replies` (dicts), validated against `schema`."""
+        self.structured_calls.append(
+            {"system": system, "user": user, "schema": schema, "history": history}
+        )
+        if self.error:
+            raise self.error
+        return schema.model_validate(self.structured_replies.pop(0))
 
     def health(self):
         return "ok", "fake"
@@ -71,14 +83,71 @@ class BrokenEmbedder:
     default_min_score = 0.1
 
     def embed_documents(self, texts):
-        from app.embeddings import EmbeddingError
+        from app.rag.embeddings import EmbeddingError
 
         raise EmbeddingError("Embedding provider is down.")
 
     def embed_query(self, text):
-        from app.embeddings import EmbeddingError
+        from app.rag.embeddings import EmbeddingError
 
         raise EmbeddingError("Embedding provider is down.")
 
     def health(self):
         return "error", "down"
+
+
+NOTEBOOK_FEATURES = [
+    "LIMIT_BAL",
+    "AGE",
+    "on_time_payment_rate",
+    "avg_payment_delay",
+    "avg_credit_utilization",
+    "EDUCATION_cleaned",
+    "sex_male",
+]
+
+
+def save_model_files(folder, splits: dict[int, str] | None = None) -> None:
+    """A small model in the notebook's file format (model.json, metadata.json, data_split.csv)
+    in which late payers default. Trained with xgboost alone, as the backend loads it."""
+    import json
+
+    import numpy as np
+    import xgboost
+
+    rng = np.random.default_rng(0)
+    delay = rng.uniform(0, 3, 400)
+    matrix = np.column_stack(
+        [
+            rng.uniform(1e4, 5e5, 400),
+            rng.integers(21, 70, 400),
+            rng.uniform(0, 1, 400),
+            delay,
+            rng.uniform(0, 1, 400),
+            rng.integers(1, 5, 400),
+            rng.integers(0, 2, 400),
+        ]
+    )
+    data = xgboost.DMatrix(matrix, label=(delay > 0.5).astype(int), feature_names=NOTEBOOK_FEATURES)
+    booster = xgboost.train({"objective": "binary:logistic", "max_depth": 2}, data, 20)
+    folder.mkdir(parents=True, exist_ok=True)
+    booster.save_model(folder / "model.json")
+    scores = {"customers": 60, "accuracy": 0.74, "precision": 0.44, "recall": 0.62, "f1": 0.52,
+              "roc_auc": 0.77, "tn": 30, "fp": 10, "fn": 8, "tp": 12}  # fmt: skip
+    (folder / "metadata.json").write_text(
+        json.dumps(
+            {
+                "model_name": "XGBoost (tuned)",
+                "trained_at": "2026-10-26T12:00:00+00:00",
+                "target": "default payment next month",
+                "features": NOTEBOOK_FEATURES,
+                "threshold": 0.5,
+                "best_params": {"max_depth": 2},
+                "metrics": {"threshold": 0.5, "validation": scores, "test": scores},
+            }
+        ),
+        encoding="utf-8",
+    )
+    if splits:
+        rows = "".join(f"{cid},{split}\n" for cid, split in sorted(splits.items()))
+        (folder / "data_split.csv").write_text("ID,split\n" + rows, encoding="utf-8")

@@ -6,10 +6,14 @@ Run from the backend directory:  uvicorn app.main:app --reload --port 8000
 from __future__ import annotations
 
 import hmac
+import json
 import logging
+import queue
 import threading
 import time
+import uuid
 from contextlib import asynccontextmanager
+from datetime import date
 from typing import Literal
 
 from dotenv import load_dotenv
@@ -26,21 +30,29 @@ from fastapi import (
 )
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import auth, schemas
-from .config import BACKEND_DIR, SUPPORTED_EXTENSIONS, Settings
-from .db import Database, EmailTaken
-from .embeddings import Embedder, EmbeddingError, build_embedder
-from .extraction import ValidationError
-from .guidance import customer_guidance
-from .knowledge_base import Busy, DuplicateDocument, KnowledgeBase, NotFound
-from .llm import AnswerGenerator, build_generator
-from .portfolio import SORT_COLUMNS, CustomerExists, Portfolio
-from .predictor import SUPPORTED_EXTENSIONS as DATASET_EXTENSIONS
-from .predictor import PredictionFailed, Predictor
-from .risk_model import score_customer
+from .core import auth, schemas
+from .core.config import BACKEND_DIR, SUPPORTED_EXTENSIONS, Settings
+from .core.db import Database, EmailTaken, now_iso
+from .customers.portfolio import SORT_COLUMNS, CustomerExists, Portfolio
+from .decisions import contact_rules, conversation, dashboard, follow_up
+from .decisions.decision import DecisionUnavailable, recommend
+from .decisions.guidance import customer_guidance
+from .integrations.mail import build_mailer
+from .langchain.agents import AssistantAgent
+from .langchain.llm import AnswerGenerator, LLMError, build_generator
+from .langchain.models import classify_error
+from .orchestration import graph
+from .rag.embeddings import Embedder, EmbeddingError, build_embedder
+from .rag.extraction import ValidationError
+from .rag.knowledge_base import Busy, DuplicateDocument, KnowledgeBase, NotFound
+from .risk import counterfactual
+from .risk.model_files import ModelMissing
+from .risk.predictor import SUPPORTED_EXTENSIONS as DATASET_EXTENSIONS
+from .risk.predictor import PredictionFailed, Predictor
+from .risk.risk_model import score_customer
 
 logger = logging.getLogger("complyagent.api")
 
@@ -66,17 +78,20 @@ def create_app(
     settings: Settings | None = None,
     embedder: Embedder | None = None,
     generator: AnswerGenerator | None | object = _UNSET,
+    mailer=None,
 ) -> FastAPI:
-    """`embedder` and `generator` can be injected so tests run without models or API keys."""
+    """`embedder`, `generator` and `mailer` can be injected so tests run without models, API
+    keys or a mailbox."""
     if settings is None:
         load_dotenv(BACKEND_DIR / ".env")
         settings = Settings.from_env()
     embedder = embedder or build_embedder(settings)
     if generator is _UNSET:
         generator = build_generator(settings)
-    kb = KnowledgeBase(settings, Database(settings.db_path), embedder, generator)
+    kb = KnowledgeBase(settings, Database.from_settings(settings), embedder, generator)
     portfolio = Portfolio(kb.db)
-    predictor = Predictor(settings.models_dir)
+    predictor = Predictor(settings.risk_model_dir)
+    mailer = mailer or build_mailer(settings)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -98,7 +113,21 @@ def create_app(
         # Load the embedding model in the background so the first upload is not slow.
         if hasattr(embedder, "_load"):
             threading.Thread(target=_warm, args=(embedder,), daemon=True).start()
+        stop = threading.Event()
+        if settings.email_poll_minutes > 0 and mailer.provider != "none":
+            threading.Thread(
+                target=_mailbox_poller,
+                args=(stop, settings.email_poll_minutes * 60, kb, portfolio, mailer),
+                daemon=True,
+            ).start()
+        if settings.follow_up_interval_minutes > 0:
+            threading.Thread(
+                target=_follow_up_scheduler,
+                args=(stop, settings.follow_up_interval_minutes * 60, kb, portfolio),
+                daemon=True,
+            ).start()
         yield
+        stop.set()
 
     app = FastAPI(title="ComplyAgent Admin & RAG API", version="1.0.0", lifespan=lifespan)
     app.state.kb = kb
@@ -138,7 +167,13 @@ def create_app(
 
     limiter = auth.RateLimiter()
     login_window = settings.login_window_minutes * 60
-    service_account = {"id": 0, "email": "", "full_name": "API token", "role": "admin"}
+    service_account = {
+        "id": 0,
+        "email": "",
+        "full_name": "API token",
+        "role": "admin",
+        "supervisor": False,
+    }
 
     def _unauthorized(message: str = "Sign in to continue.") -> HTTPException:
         return HTTPException(
@@ -211,9 +246,30 @@ def create_app(
     # --- public ----------------------------------------------------------------------------
 
     # This server is API-only (the UI is the Vite app); send browsers that land on it to the docs.
-    @app.get("/", include_in_schema=False)
-    def root():
-        return RedirectResponse("/docs")
+    # The built web app (frontend/dist, copied to FRONTEND_DIR by the Dockerfile) is served from
+    # the same origin as the API, so no CORS is needed. Without it, / opens the API docs.
+    frontend = settings.frontend_dir
+    if frontend and (frontend / "index.html").is_file():
+        from fastapi.staticfiles import StaticFiles
+
+        app.mount("/assets", StaticFiles(directory=frontend / "assets"), name="assets")
+        index = (frontend / "index.html").read_text(encoding="utf-8")
+
+        @app.get("/{path:path}", include_in_schema=False)
+        def web_app(path: str):
+            if path.startswith("api/"):
+                raise ApiError(404, "not_found", "No such API route.")
+            file = (frontend / path).resolve()
+            if path and file.is_file() and frontend.resolve() in file.parents:
+                from fastapi.responses import FileResponse
+
+                return FileResponse(file)
+            return Response(index, media_type="text/html")  # the app's own routes
+    else:
+
+        @app.get("/", include_in_schema=False)
+        def root():
+            return RedirectResponse("/docs")
 
     @app.get("/favicon.ico", include_in_schema=False)
     def favicon():
@@ -235,7 +291,8 @@ def create_app(
         responses=ERROR_RESPONSES,
     )
     def register(body: schemas.RegisterRequest, request: Request):
-        """Creates an ordinary account. The role is never taken from the request."""
+        """Creates an account. The role is never taken from the request: it is admin only for
+        addresses listed in ADMIN_EMAILS, otherwise user."""
         _check_origin(request)
         if not settings.allow_registration:
             raise ApiError(403, "registration_closed", "Sign-up is turned off on this server.")
@@ -249,7 +306,8 @@ def create_app(
         except auth.AuthError as exc:
             raise ApiError(422, exc.code, exc.message) from exc
         try:
-            user = kb.db.create_user(email, full_name, auth.hash_password(body.password), "user")
+            role = "admin" if email in settings.admin_emails else "user"
+            user = kb.db.create_user(email, full_name, auth.hash_password(body.password), role)
         except EmailTaken:
             raise ApiError(
                 409, "email_taken", "An account with this email address already exists."
@@ -362,6 +420,9 @@ def create_app(
                 if settings.rag_min_score is not None
                 else embedder.default_min_score
             ),
+            "email_provider": mailer.provider,
+            "email_redirect_to": mailer.redirect_to,
+            "contact_rules": contact_rules.load(settings, kb).describe(),
         }
 
     # --- admin: documents ------------------------------------------------------------------
@@ -522,7 +583,10 @@ def create_app(
         search: str = Query("", max_length=50),
         risk: schemas.RiskLevel | None = None,
         actual: Literal["defaulted", "paid"] | None = None,
-        sort: str = Query("id", enum=sorted(SORT_COLUMNS)),
+        payment: Literal["overdue", "current"] | None = Query(
+            None, description="overdue: late in the latest month; current: not late"
+        ),
+        sort: str = Query("id", json_schema_extra={"enum": sorted(SORT_COLUMNS)}),
         order: Literal["asc", "desc"] = "asc",
         page: int = Query(1, ge=1, le=100_000),
         page_size: int = Query(25, ge=1, le=100),
@@ -530,7 +594,7 @@ def create_app(
         if sort not in SORT_COLUMNS:
             raise ApiError(422, "invalid_request", f"sort: must be one of {sorted(SORT_COLUMNS)}")
         return portfolio.list_customers(
-            search, risk, actual, sort, order == "desc", page, page_size
+            search, risk, actual, payment, sort, order == "desc", page, page_size
         )
 
     @app.post(
@@ -551,7 +615,7 @@ def create_app(
                 "customer_exists",
                 f"Customer {exc.customer_id} already exists. Use another number or leave it blank.",
             ) from exc
-        scored = score_customer(kb.db, settings.models_dir, customer_id)
+        scored = score_customer(kb.db, settings.risk_model_dir, customer_id)
         return {"customer": portfolio.get_customer(customer_id), "scored": scored}
 
     @app.get(
@@ -565,7 +629,7 @@ def create_app(
         customer = portfolio.get_customer(customer_id)
         if not customer:
             raise ApiError(404, "not_found", "Customer not found.")
-        return customer
+        return {**customer, "do_not_contact": conversations.do_not_contact(customer_id)}
 
     @app.post(
         "/api/admin/customers/{customer_id}/guidance",
@@ -583,6 +647,510 @@ def create_app(
         if result is None:
             raise ApiError(404, "not_found", "Customer not found.")
         return result
+
+    @app.post(
+        "/api/admin/customers/{customer_id}/recommendation",
+        response_model=schemas.CustomerRecommendation,
+        dependencies=[admin],
+        tags=["portfolio"],
+        responses=ERROR_RESPONSES,
+    )
+    def recommendation(customer_id: int):
+        """The Decision Agent's next action for this customer, with the evidence it used."""
+        try:
+            result = recommend(kb, portfolio, kb.generator, customer_id)
+        except EmbeddingError as exc:
+            raise ApiError(503, "embeddings_unavailable", str(exc)) from exc
+        except DecisionUnavailable as exc:
+            status = 502 if exc.code == "llm_bad_output" else 503
+            raise ApiError(status, exc.code, exc.message) from exc
+        except LLMError as exc:
+            raise ApiError(503 if exc.retryable else 502, exc.code, exc.message) from exc
+        if result is None:
+            raise ApiError(404, "not_found", "Customer not found.")
+        return result
+
+    # --- admin: collections conversations (all agents, with an officer's approval) ----------
+    #
+    # The agents run inside these requests: Case Analyst, Decision Agent, the writer and the
+    # Red Team (the first email), and the Communication Agent (each reply). Drafts wait for an
+    # officer: approve (optionally edited), reject, then send.
+
+    def _conversation(run, *args):
+        try:
+            return run(*args)
+        except conversation.ConversationError as exc:
+            raise ApiError(exc.status, exc.code, exc.message) from exc
+        except EmbeddingError as exc:
+            raise ApiError(503, "embeddings_unavailable", str(exc)) from exc
+        except DecisionUnavailable as exc:
+            status = 502 if exc.code == "llm_bad_output" else 503
+            raise ApiError(status, exc.code, exc.message) from exc
+        except LLMError as exc:
+            raise ApiError(503 if exc.retryable else 502, exc.code, exc.message) from exc
+
+    conversations = conversation.Conversations(kb.db)
+    conv = {"dependencies": [admin], "tags": ["conversations"], "responses": ERROR_RESPONSES}
+
+    def _stream(run, *args) -> StreamingResponse:
+        """Runs an agent request and streams it as server-sent events: one `step` per graph
+        node as it finishes, then `done` with the conversation (or `error`)."""
+        events: queue.Queue = queue.Queue()
+
+        def work() -> None:
+            token = graph.PROGRESS.set(lambda step: events.put(("step", step)))
+            try:
+                result = _conversation(run, *args)
+                done = schemas.Conversation.model_validate(result).model_dump(mode="json")
+                events.put(("done", done))
+            except HTTPException as exc:
+                detail = (
+                    exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+                )
+                events.put(("error", {"status": exc.status_code, "code": "http_error", **detail}))
+            except Exception:
+                logger.exception("Streaming agent request failed")
+                message = "An unexpected server error occurred."
+                events.put(("error", {"status": 500, "code": "internal_error", "message": message}))
+            finally:
+                graph.PROGRESS.reset(token)
+                events.put(None)
+
+        threading.Thread(target=work, daemon=True).start()
+
+        def body():
+            while (item := events.get()) is not None:
+                kind, data = item
+                yield f"event: {kind}\ndata: {json.dumps(data, default=str)}\n\n"
+
+        return StreamingResponse(
+            body(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.get(
+        "/api/admin/customers/{customer_id}/conversation",
+        response_model=schemas.Conversation | None,
+        **conv,
+    )
+    def latest_conversation(customer_id: int):
+        """The customer's latest conversation, or null when there has been none."""
+        get_customer(customer_id)
+        return conversations.latest_for(customer_id)
+
+    @app.post(
+        "/api/admin/customers/{customer_id}/conversation",
+        response_model=schemas.Conversation,
+        **conv,
+    )
+    def start_conversation(customer_id: int, user: dict = admin):
+        """Starts a conversation: the agents write the first email, which waits for approval."""
+        get_customer(customer_id)
+        return _conversation(
+            conversation.start, kb, portfolio, kb.generator, conversations, customer_id, user
+        )
+
+    @app.post(
+        "/api/admin/customers/{customer_id}/conversation/stream",
+        response_class=StreamingResponse,
+        **conv,
+    )
+    def start_conversation_stream(customer_id: int, user: dict = admin):
+        """The same as starting a conversation, streaming each agent step as it finishes."""
+        get_customer(customer_id)
+        return _stream(
+            conversation.start, kb, portfolio, kb.generator, conversations, customer_id, user
+        )
+
+    @app.post(
+        "/api/admin/conversations/{conversation_id}/inbound/stream",
+        response_class=StreamingResponse,
+        **conv,
+    )
+    def customer_replied_stream(
+        conversation_id: int, email: schemas.InboundEmail, user: dict = admin
+    ):
+        return _stream(
+            conversation.receive, kb, portfolio, kb.generator, conversations, conversation_id,
+            email.subject, email.body, user,
+        )  # fmt: skip
+
+    @app.post(
+        "/api/admin/conversations/{conversation_id}/redraft/stream",
+        response_class=StreamingResponse,
+        **conv,
+    )
+    def redraft_stream(conversation_id: int, body: schemas.RedraftRequest, user: dict = admin):
+        return _stream(
+            conversation.redraft, kb, portfolio, kb.generator, conversations, conversation_id,
+            body.feedback, user,
+        )  # fmt: skip
+
+    @app.post(
+        "/api/admin/conversations/{conversation_id}/inbound",
+        response_model=schemas.Conversation,
+        **conv,
+    )
+    def customer_replied(conversation_id: int, email: schemas.InboundEmail, user: dict = admin):
+        """Adds the customer's reply (pasted in until email is connected); the Communication
+        Agent drafts the answer, or hands the conversation to a person."""
+        return _conversation(
+            conversation.receive, kb, portfolio, kb.generator, conversations, conversation_id,
+            email.subject, email.body, user,
+        )  # fmt: skip
+
+    @app.post(
+        "/api/admin/conversations/{conversation_id}/redraft",
+        response_model=schemas.Conversation,
+        **conv,
+    )
+    def redraft_message(conversation_id: int, body: schemas.RedraftRequest, user: dict = admin):
+        """A new draft for the same point in the thread, following the officer's feedback."""
+        return _conversation(
+            conversation.redraft, kb, portfolio, kb.generator, conversations, conversation_id,
+            body.feedback, user,
+        )  # fmt: skip
+
+    @app.post(
+        "/api/admin/conversations/{conversation_id}/close",
+        response_model=schemas.Conversation,
+        **conv,
+    )
+    def close_conversation(conversation_id: int, body: schemas.CloseRequest, user: dict = admin):
+        return _conversation(conversation.close, conversations, conversation_id, user, body.note)
+
+    @app.post(
+        "/api/admin/messages/{message_id}/approve", response_model=schemas.Conversation, **conv
+    )
+    def approve_message(message_id: int, body: schemas.ApproveRequest, user: dict = admin):
+        """An officer approves a draft, optionally edited; an edit is checked again."""
+        return _conversation(
+            conversation.approve, portfolio, conversations, message_id, user,
+            body.subject, body.body, body.note,
+        )  # fmt: skip
+
+    @app.post(
+        "/api/admin/messages/{message_id}/reject", response_model=schemas.Conversation, **conv
+    )
+    def reject_message(message_id: int, body: schemas.RejectRequest, user: dict = admin):
+        return _conversation(conversation.reject, conversations, message_id, user, body.note)
+
+    @app.post("/api/admin/messages/{message_id}/send", response_model=schemas.Conversation, **conv)
+    def send_message(message_id: int, user: dict = admin):
+        """Marks an approved email as sent (email delivery is not connected yet); the Follow-up
+        Agent then plans what happens if the customer does not reply."""
+        rules = contact_rules.load(settings, kb)
+        sent = _conversation(
+            conversation.send, portfolio, conversations, message_id, user, rules, mailer
+        )
+        follow_up.plan(kb, portfolio, kb.generator, conversations, sent["id"])
+        return conversations.get(sent["id"])
+
+    @app.post("/api/admin/email/poll", response_model=schemas.MailboxPoll, **conv)
+    def poll_email():
+        """Reads the collections mailbox: replies are matched to their conversations and
+        answered by the Communication Agent, like a pasted reply."""
+        return _conversation(
+            conversation.poll_mailbox, kb, portfolio, kb.generator, conversations, mailer
+        )
+
+    # --- admin: the collections ledger -----------------------------------------------------
+
+    def _ledger(customer_id: int) -> dict:
+        rules = contact_rules.load(settings, kb)
+        return {
+            **conversations.ledger.summary(customer_id),
+            "contact_rules": rules.describe(),
+            "contact_now": contact_rules.problems(rules, kb.db, customer_id),
+        }
+
+    @app.get("/api/admin/customers/{customer_id}/ledger", response_model=schemas.LedgerView, **conv)
+    def ledger(customer_id: int):
+        """Payments, promises to pay and contact attempts since the records."""
+        get_customer(customer_id)
+        return _ledger(customer_id)
+
+    @app.post(
+        "/api/admin/customers/{customer_id}/payments", response_model=schemas.LedgerView, **conv
+    )
+    def record_payment(customer_id: int, body: schemas.PaymentRequest, user: dict = admin):
+        """Records a payment. It lowers what the emails ask for and can keep a promise; paid in
+        full, the scheduled follow-ups are cancelled."""
+        get_customer(customer_id)
+        who = conversation.actor(user)
+        payment = conversations.ledger.record_payment(
+            customer_id, body.amount, body.paid_on, who, body.note
+        )
+        conversations.audit.record(
+            who, "ledger.payment", f"Payment of NT${body.amount:,} on {body.paid_on} recorded.",
+            customer_id=customer_id, detail=payment,
+        )  # fmt: skip
+        settled = conversations.ledger.check_promise(customer_id, body.paid_on)
+        if settled:
+            conversations.audit.record(
+                who, f"ledger.promise_{settled['status']}", settled["outcome"],
+                customer_id=customer_id, detail=settled,
+            )  # fmt: skip
+        customer = get_customer(customer_id)
+        latest = conversations.latest_for(customer_id)
+        if customer["latest_bill"] and customer["recorded_paid"] >= customer["latest_bill"]:
+            if latest and latest["status"] != "closed":
+                if conversations.cancel_follow_ups(latest["id"], "Paid in full."):
+                    conversations.audit.record(
+                        who, "follow_up.cancelled", "Paid in full: the follow-ups were cancelled.",
+                        customer_id=customer_id, conversation_id=latest["id"],
+                    )  # fmt: skip
+        return _ledger(customer_id)
+
+    @app.post(
+        "/api/admin/customers/{customer_id}/promises", response_model=schemas.LedgerView, **conv
+    )
+    def record_promise(customer_id: int, body: schemas.PromiseRequest, user: dict = admin):
+        """Records a promise to pay, e.g. one made on the phone."""
+        get_customer(customer_id)
+        latest = conversations.latest_for(customer_id)
+        open_id = latest["id"] if latest and latest["status"] != "closed" else None
+        who = conversation.actor(user)
+        promise = conversations.ledger.record_promise(
+            customer_id, body.due_on, who, body.amount, open_id
+        )
+        conversations.audit.record(
+            who, "ledger.promise", f"Promise to pay by {body.due_on} recorded.",
+            customer_id=customer_id, conversation_id=open_id, detail=promise,
+        )  # fmt: skip
+        return _ledger(customer_id)
+
+    @app.post(
+        "/api/admin/customers/{customer_id}/contacts", response_model=schemas.LedgerView, **conv
+    )
+    def record_contact(customer_id: int, body: schemas.ContactRequest, user: dict = admin):
+        """Logs a call (or text) to the customer. It counts toward the contact limit, and a
+        live conversation starts the quiet period."""
+        get_customer(customer_id)
+        rules = contact_rules.load(settings, kb)
+        broken = contact_rules.problems(rules, kb.db, customer_id)
+        latest = conversations.latest_for(customer_id)
+        open_id = latest["id"] if latest and latest["status"] != "closed" else None
+        who = conversation.actor(user)
+        contact = conversations.ledger.record_contact(
+            customer_id, body.channel, body.outcome, who, open_id, body.note
+        )
+        conversations.audit.record(
+            who, "contact.logged",
+            f"{body.channel.capitalize()} contact logged: {body.outcome.replace('_', ' ')}."
+            + (f" It broke the contact rules: {'; '.join(broken)}." if broken else ""),
+            customer_id=customer_id, conversation_id=open_id, detail=contact,
+        )  # fmt: skip
+        return _ledger(customer_id)
+
+    @app.post(
+        "/api/admin/customers/{customer_id}/do-not-contact",
+        response_model=schemas.CustomerDetail,
+        **conv,
+    )
+    def do_not_contact(customer_id: int, body: schemas.DoNotContactRequest, user: dict = admin):
+        """Records the customer's request to stop contact: no email is written or sent until an
+        officer lifts it. Waiting drafts and follow-ups are withdrawn."""
+        get_customer(customer_id)
+        conversation.stop_contact(conversations, customer_id, body.reason, conversation.actor(user))
+        return get_customer(customer_id)
+
+    @app.post(
+        "/api/admin/customers/{customer_id}/do-not-contact/lift",
+        response_model=schemas.CustomerDetail,
+        **conv,
+    )
+    def lift_do_not_contact(customer_id: int, body: schemas.LiftRequest, user: dict = admin):
+        """Allows contact again, saying why (e.g. the customer asked to be contacted)."""
+        get_customer(customer_id)
+        _conversation(conversation.lift_contact_block, conversations, customer_id, body.note, user)
+        return get_customer(customer_id)
+
+    @app.get("/api/admin/collections/summary", response_model=schemas.CollectionsDashboard, **conv)
+    def collections_summary():
+        """The collections dashboard: work waiting, resolutions, promises, compliance."""
+        return dashboard.summary(kb.db)
+
+    @app.get("/api/admin/inbox", response_model=schemas.Inbox, **conv)
+    def inbox():
+        """Everything across customers that waits for an officer: drafts to approve, blocked
+        drafts, conversations handed to a person, due follow-ups and calls to make."""
+        found = conversations.inbox(now_iso())
+        return {**found, "total": sum(len(items) for items in found.values())}
+
+    # --- admin: the Follow-up Agent --------------------------------------------------------
+
+    @app.get(
+        "/api/admin/follow-ups",
+        response_model=list[schemas.FollowUp],
+        dependencies=[admin],
+        tags=["follow-ups"],
+    )
+    def list_follow_ups(status: Literal["scheduled", "done", "cancelled"] | None = None):
+        """Follow-ups, soonest first."""
+        return conversations.list_follow_ups(status)
+
+    @app.post(
+        "/api/admin/follow-ups/run-due",
+        response_model=schemas.FollowUpRun,
+        dependencies=[admin],
+        tags=["follow-ups"],
+    )
+    def run_due_follow_ups():
+        """Carries out every scheduled follow-up whose time has come."""
+        return follow_up.run_due(kb, portfolio, kb.generator, conversations)
+
+    @app.post(
+        "/api/admin/follow-ups/{follow_up_id}/run",
+        response_model=schemas.Conversation,
+        tags=["follow-ups"],
+        dependencies=[admin],
+        responses=ERROR_RESPONSES,
+    )
+    def run_follow_up(follow_up_id: int, user: dict = admin):
+        """Carries out one follow-up now, without waiting for it to be due."""
+        return _conversation(
+            follow_up.run, kb, portfolio, kb.generator, conversations, follow_up_id,
+            conversation.actor(user),
+        )  # fmt: skip
+
+    # --- admin: audit trail and the agent graph ---------------------------------------------
+
+    @app.get(
+        "/api/admin/audit", response_model=schemas.AuditList, dependencies=[admin], tags=["audit"]
+    )
+    def audit_trail(
+        customer_id: int | None = None,
+        conversation_id: int | None = None,
+        event: str | None = Query(None, max_length=60),
+        limit: int = Query(100, ge=1, le=500),
+        before: int | None = None,
+    ):
+        """Every agent step and officer action, newest first."""
+        events = conversations.audit.list(customer_id, conversation_id, event, limit, before)
+        return {
+            "events": events,
+            "next_before": events[-1]["id"] if len(events) == limit else None,
+        }
+
+    @app.get(
+        "/api/admin/audit/export",
+        response_class=PlainTextResponse,
+        dependencies=[admin],
+        tags=["audit"],
+        responses={200: {"content": {"text/csv": {}}}},
+    )
+    def export_audit(
+        customer_id: int | None = None,
+        event: str | None = Query(None, max_length=60),
+        since: date | None = None,
+        until: date | None = None,
+        user: dict = admin,
+    ):
+        """The audit trail as CSV for a compliance review, oldest first. The export itself is
+        recorded in the trail."""
+        text, rows = conversations.audit.export_csv(
+            customer_id, event, since.isoformat() if since else None,
+            until.isoformat() if until else None,
+        )  # fmt: skip
+        filters = {k: str(v) for k, v in (("customer_id", customer_id), ("event", event),
+                   ("since", since), ("until", until)) if v is not None}  # fmt: skip
+        conversations.audit.record(
+            conversation.actor(user), "audit.exported", f"Audit trail exported: {rows} row(s).",
+            customer_id=customer_id, detail={"filters": filters, "rows": rows},
+        )  # fmt: skip
+        name = "audit-trail" + (f"-customer-{customer_id}" if customer_id is not None else "")
+        return PlainTextResponse(
+            text,
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{name}.csv"'},
+        )
+
+    @app.get(
+        "/api/admin/agents/graph",
+        response_model=schemas.AgentGraph,
+        dependencies=[admin],
+        tags=["audit"],
+    )
+    def agent_graph():
+        """The LangGraph graph that connects the agents, as a Mermaid diagram."""
+        return {"mermaid": graph.mermaid()}
+
+    # --- admin: the Counterfactual Simulator -----------------------------------------------
+
+    class _OneCustomer:
+        """A portfolio of one changed record, for the Decision Agent's what-if."""
+
+        def __init__(self, customer: dict) -> None:
+            self.customer = customer
+
+        def get_customer(self, customer_id: int) -> dict | None:
+            return self.customer
+
+    def _simulate(customer_id: int, body: schemas.SimulateRequest | None, user: dict) -> dict:
+        customer = get_customer(customer_id)
+        if not customer["history"]:
+            raise ApiError(409, "no_history", "This customer has no payment history to change.")
+        custom = body.model_dump(exclude={"decide"}, exclude_none=True) if body else None
+        try:
+            result = counterfactual.simulate(settings.risk_model_dir, customer, custom or None)
+        except ModelMissing as exc:
+            raise ApiError(503, "model_missing", str(exc)) from exc
+        if result["custom"] is None:
+            return result
+        changed = result["custom"].pop("record")
+        changed |= {
+            "default_probability": result["custom"]["probability"],
+            "risk_level": result["custom"]["risk_level"],
+        }
+        if body.decide:
+            try:
+                decided = recommend(kb, _OneCustomer(changed), kb.generator, customer_id)
+                result["custom"]["recommendation"] = decided["recommendation"]
+            except (DecisionUnavailable, LLMError) as exc:
+                result["custom"]["decision_error"] = exc.message
+            except EmbeddingError as exc:
+                result["custom"]["decision_error"] = str(exc)
+        rec = result["custom"].get("recommendation")
+        would = f"; the Decision Agent would {rec.action.value.replace('_', ' ')}" if rec else ""
+        conversations.audit.record(
+            conversation.actor(user),
+            "simulation.run",
+            f"What-if {result['custom']['changes']}: chance of default "
+            f"{result['base']['probability']:.0%} -> {result['custom']['probability']:.0%}"
+            f"{would}.",
+            customer_id=customer_id,
+            detail={
+                "changes": result["custom"]["changes"],
+                "base": result["base"],
+                "probability": result["custom"]["probability"],
+                "recommendation": rec.model_dump(mode="json") if rec else None,
+            },
+        )
+        return result
+
+    @app.get(
+        "/api/admin/customers/{customer_id}/counterfactuals",
+        response_model=schemas.Simulation,
+        dependencies=[admin],
+        tags=["simulator"],
+        responses=ERROR_RESPONSES,
+    )
+    def counterfactuals(customer_id: int, user: dict = admin):
+        """The ready-made what-ifs and the fairness check for this customer. No LLM."""
+        return _simulate(customer_id, None, user)
+
+    @app.post(
+        "/api/admin/customers/{customer_id}/counterfactuals",
+        response_model=schemas.Simulation,
+        dependencies=[admin],
+        tags=["simulator"],
+        responses=ERROR_RESPONSES,
+    )
+    def simulate_change(customer_id: int, body: schemas.SimulateRequest, user: dict = admin):
+        """The officer's own what-if; with decide, the Decision Agent decides for it too."""
+        return _simulate(customer_id, body, user)
 
     # --- admin: dataset prediction ---------------------------------------------------------
 
@@ -646,6 +1214,67 @@ def create_app(
         except EmbeddingError as exc:
             raise ApiError(503, "embeddings_unavailable", str(exc)) from exc
 
+    # --- AI Assistant: one chat for everyone (LangChain agent with tools) -------------------
+    #
+    # Administrators' assistant has every tool (policies, customers, portfolio, Decision Agent);
+    # everyone else's can only search the policies. Without a model, or when the model fails,
+    # the reply is the matching policy passages, as the policy search alone would give.
+
+    assistants: dict[bool, AssistantAgent] = {}
+    assistants_lock = threading.Lock()
+
+    def _assistant(admin_tools: bool) -> AssistantAgent:
+        with assistants_lock:
+            if admin_tools not in assistants:
+                assistants[admin_tools] = AssistantAgent(
+                    kb.generator.chat_model,
+                    kb.generator.model,
+                    kb,
+                    portfolio,
+                    kb.generator,
+                    customer_tools=admin_tools,
+                )
+            return assistants[admin_tools]
+
+    def _passages_only(message: str, conversation_id: str | None, warning: str | None) -> dict:
+        result = kb.answer(message, generate=False)
+        keys = ("answer", "answer_mode", "insufficient_evidence", "sources", "model")
+        return {
+            **{k: result[k] for k in keys},
+            "warning": warning,
+            "conversation_id": conversation_id or uuid.uuid4().hex,
+            "steps": [],
+        }
+
+    @app.post(
+        "/api/assistant/chat",
+        response_model=schemas.AssistantReply,
+        tags=["assistant"],
+        responses=ERROR_RESPONSES,
+    )
+    def assistant_chat(body: schemas.AssistantRequest, user: dict = signed_in):
+        """Ask the AI Assistant. It answers with read-only tools, cites the policy passages it
+        read, and remembers the conversation for the user who started it."""
+        try:
+            if getattr(kb.generator, "chat_model", None) is None:
+                return _passages_only(body.message, body.conversation_id, None)
+            try:
+                return _assistant(user["role"] == "admin").ask(
+                    body.message, owner=str(user["id"]), conversation_id=body.conversation_id
+                )
+            except EmbeddingError:
+                raise
+            except Exception as exc:
+                code, message, _ = classify_error(exc)
+                logger.warning("AI Assistant failed: %s", code)
+                warning = (
+                    f"The answer model is not available right now: {message} "
+                    "The matching policy passages are shown instead."
+                )
+                return _passages_only(body.message, body.conversation_id, warning)
+        except EmbeddingError as exc:
+            raise ApiError(503, "embeddings_unavailable", str(exc)) from exc
+
     return app
 
 
@@ -654,6 +1283,32 @@ def _warm(embedder) -> None:
         embedder._load()
     except EmbeddingError:
         pass  # already logged; surfaced through /api/admin/health
+
+
+def _mailbox_poller(stop: threading.Event, seconds: int, kb, portfolio, mailer) -> None:
+    """Reads the mailbox every `seconds` (EMAIL_POLL_MINUTES) until shutdown."""
+    store = conversation.Conversations(kb.db)
+    while not stop.wait(seconds):
+        try:
+            result = conversation.poll_mailbox(kb, portfolio, kb.generator, store, mailer)
+            if result["fetched"]:
+                logger.info(
+                    "Mailbox: %d new, %d matched", result["fetched"], len(result["matched"])
+                )
+        except Exception:  # keep polling; the next run tries again
+            logger.exception("Reading the mailbox failed")
+
+
+def _follow_up_scheduler(stop: threading.Event, seconds: int, kb, portfolio) -> None:
+    """Runs the due follow-ups every `seconds` (FOLLOW_UP_INTERVAL_MINUTES) until shutdown."""
+    store = conversation.Conversations(kb.db)
+    while not stop.wait(seconds):
+        try:
+            result = follow_up.run_due(kb, portfolio, kb.generator, store)
+            if result["due"]:
+                logger.info("Follow-ups: %d due, %d done", result["due"], len(result["done"]))
+        except Exception:  # keep the scheduler alive; the next run tries again
+            logger.exception("The follow-up run failed")
 
 
 def __getattr__(name: str):

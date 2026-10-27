@@ -15,6 +15,11 @@
   {"question": "When must an account be escalated to a human?", "document": "escalation_policy.pdf", "answer_contains": ["90 days"]},
   {"question": "Who has to approve legal action?", "document": "escalation_policy.pdf", "answer_contains": ["head of collections"]},
   {"question": "How long are escalation records kept?", "document": "escalation_policy.pdf", "answer_contains": ["seven years"]},
+  {"question": "How long can a collections SMS be?", "document": "messaging_policy.docx", "answer_contains": ["300"]},
+  {"question": "What tone should a collections message use in Stage 2?", "document": "messaging_policy.docx", "answer_contains": ["supportive"]},
+  {"question": "Can a collections message mention the customer's risk score?", "document": "messaging_policy.docx", "answer_contains": ["never"]},
+  {"question": "What must the subject line of a collections email never contain?", "document": "messaging_policy.docx", "answer_contains": ["debt"]},
+  {"question": "What happens when a customer promises to pay?", "document": "messaging_policy.docx", "answer_contains": ["follow-up"]},
   {"question": "How do I bake sourdough bread?", "document": null},
   {"question": "What is the capital of France?", "document": null}
 ]

@@ -5,7 +5,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import manage
-from app.portfolio import ImportFailed, Portfolio
+from app.customers.portfolio import ImportFailed, Portfolio
+
+from .helpers import NOTEBOOK_FEATURES, save_model_files
 
 HEADER = ["ID"] + [f"X{i}" for i in range(1, 24)] + ["Y"]
 
@@ -100,10 +102,22 @@ def test_customers_are_found_filtered_sorted_and_paged(loaded):
     assert ids(loaded.get("/api/admin/customers?actual=paid")) == [2, 3]
     assert ids(loaded.get("/api/admin/customers?risk=high")) == []  # nothing is scored yet
     assert ids(loaded.get("/api/admin/customers?sort=latest_status&order=desc")) == [4, 1, 3, 2]
+    # Late in the latest month: 4 is 3 months late, 1 is 2; 2 paid in full, 3 paid the minimum.
+    overdue = loaded.get("/api/admin/customers?payment=overdue").json()
+    assert [c["customer_id"] for c in overdue["customers"]] == [1, 4] and overdue["total"] == 2
+    assert ids(loaded.get("/api/admin/customers?payment=current")) == [2, 3]
+    assert ids(loaded.get("/api/admin/customers?payment=overdue&actual=paid")) == []
     paged = loaded.get("/api/admin/customers?sort=limit_bal&order=desc&page_size=1&page=2")
     assert ids(paged) == [3] and paged.json()["total"] == 4
 
-    for bad in ("sort=password_hash", "risk=huge", "actual=x", "page=0", "page_size=500"):
+    for bad in (
+        "sort=password_hash",
+        "risk=huge",
+        "actual=x",
+        "payment=x",
+        "page=0",
+        "page_size=500",
+    ):
         response = loaded.get(f"/api/admin/customers?{bad}")
         assert response.status_code == 422, bad
         assert response.json()["error"]["code"] == "invalid_request"
@@ -188,22 +202,28 @@ def test_a_bad_file_imports_nothing(client, tmp_path):
     assert client.get("/api/admin/portfolio/summary").json()["loaded"] is False
 
 
-def test_training_scores_every_customer_and_reports_the_model(client, tmp_path, capsys):
+def test_scoring_uses_the_notebook_model_and_reports_it(client, tmp_path, capsys):
     db = client.app.state.kb.db
+    folder = tmp_path / "notebook_model"
     path = write_csv(tmp_path / "many.csv", many_rows())
-    with pytest.raises(SystemExit, match="not enough customer data"):
-        manage.main(["train-model"], db=db, models_dir=tmp_path / "models")
+    with pytest.raises(SystemExit, match="No model files"):
+        manage.main(["score-customers"], db=db, models_dir=folder)
+    save_model_files(folder, splits={1: "train", 2: "validation", 3: "test"})
+    with pytest.raises(SystemExit, match="no customers to score"):
+        manage.main(["score-customers"], db=db, models_dir=folder)
     assert manage.main(["import-customers", "--csv", str(path)], db=db) == 0
-    assert manage.main(["train-model"], db=db, models_dir=tmp_path / "models") == 0
+    assert manage.main(["score-customers"], db=db, models_dir=folder) == 0
     out = capsys.readouterr().out
-    assert "Imported 400 customers" in out and "scored 400 customers" in out
-    assert (tmp_path / "models" / "default_risk_xgboost.json").is_file()
+    assert "Imported 400 customers" in out and "Scored 400 customers with XGBoost (tuned)" in out
 
     s = client.get("/api/admin/portfolio/summary").json()
     model = s["model"]
-    assert model["model_name"] == "XGBoost (tuned)" and len(model["features"]) == 7
-    assert model["metrics"]["test"]["customers"] == 60  # 15% held out
-    assert model["metrics"]["test"]["roc_auc"] > 0.75  # late payers are easy to tell apart
+    assert model["model_name"] == "XGBoost (tuned)" and model["features"] == NOTEBOOK_FEATURES
+    assert model["trained_at"] == "2026-10-26T12:00:00+00:00"  # from the notebook's metadata
+    assert model["metrics"]["test"]["roc_auc"] == 0.77
+    # The notebook's split marks each customer; customers it did not list have none.
+    splits = [client.get(f"/api/admin/customers/{i}").json()["data_split"] for i in (1, 2, 3, 4)]
+    assert splits == ["train", "validation", "test", None]
     assert [g["risk_level"] for g in s["by_risk"]] == ["low", "medium", "high"]
     assert sum(g["customers"] for g in s["by_risk"]) == 400
     low, _, high = s["by_risk"]
@@ -213,7 +233,6 @@ def test_training_scores_every_customer_and_reports_the_model(client, tmp_path, 
     first = riskiest["customers"][0]
     assert first["risk_level"] == "high" and first["predicted_default"] is True
     assert first["default_probability"] >= riskiest["customers"][-1]["default_probability"]
-    assert first["data_split"] in ("train", "validation", "test")
     high_total = client.get("/api/admin/customers?risk=high").json()["total"]
     assert high_total == high["customers"]
 
@@ -284,16 +303,17 @@ def test_ordinary_users_cannot_add_customers(loaded):
         assert response.status_code == 403
 
 
-def test_a_customer_added_after_training_is_scored_by_the_model(client, tmp_path):
+def test_a_customer_added_after_scoring_is_scored_by_the_model(client, tmp_path):
     db = client.app.state.kb.db
-    models_dir = client.app.state.kb.settings.models_dir
+    models_dir = client.app.state.kb.settings.risk_model_dir
+    save_model_files(models_dir)
     assert (
         manage.main(
             ["import-customers", "--csv", str(write_csv(tmp_path / "m.csv", many_rows()))], db=db
         )
         == 0
     )
-    assert manage.main(["train-model"], db=db, models_dir=models_dir) == 0
+    assert manage.main(["score-customers"], db=db, models_dir=models_dir) == 0
 
     late = client.post("/api/admin/customers", json=entry(history=[
         {"repayment_status": 3, "bill_amt": 70000, "pay_amt": 0}] * 6)).json()  # fmt: skip

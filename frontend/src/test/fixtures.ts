@@ -142,6 +142,7 @@ export function portfolio(overrides: Partial<PortfolioSummary> = {}): PortfolioS
 export function customer(overrides: Partial<CustomerSummary> = {}): CustomerSummary {
   return {
     customer_id: 7,
+    email: 'zainab.khan7@example.net',
     limit_bal: 20000,
     age: 24,
     sex: 'Female',
@@ -169,7 +170,7 @@ export const customerDetail: CustomerDetail = {
   ],
 }
 
-type Handler = (init: RequestInit) => { status?: number; body: unknown } | Promise<never>
+type Handler = (init: RequestInit) => { status?: number; body?: unknown; text?: string } | Promise<never>
 
 /**
  * Replaces fetch with a router keyed by "METHOD /path". Tests assert on the real HTTP contract
@@ -183,6 +184,9 @@ export function mockApi(routes: Record<string, Handler>) {
     const handler = routes[key]
     if (!handler) throw new Error(`Unexpected request: ${key}`)
     const result = await handler(init)
+    if (result.text !== undefined) {
+      return new Response(result.text, { status: result.status ?? 200, headers: { 'Content-Type': 'text/event-stream' } })
+    }
     return new Response(JSON.stringify(result.body), {
       status: result.status ?? 200,
       headers: { 'Content-Type': 'application/json' },

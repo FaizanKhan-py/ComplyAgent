@@ -1,24 +1,11 @@
 import csv
 import io
 
-import joblib
-import numpy as np
 import pytest
-from xgboost import XGBClassifier
 
-from app.predictor import MODEL_FILE
-
+from .helpers import NOTEBOOK_FEATURES as FEATURES
+from .helpers import save_model_files
 from .test_portfolio_api import HEADER, ROWS, many_rows
-
-FEATURES = [
-    "LIMIT_BAL",
-    "AGE",
-    "on_time_payment_rate",
-    "avg_payment_delay",
-    "avg_credit_utilization",
-    "EDUCATION_cleaned",
-    "sex_male",
-]
 
 
 def as_csv(rows, header=HEADER) -> bytes:
@@ -31,33 +18,8 @@ def as_csv(rows, header=HEADER) -> bytes:
 
 @pytest.fixture
 def saved_model(settings):
-    """A small model in the notebook's bundle format: late payers default."""
-    rng = np.random.default_rng(0)
-    delay = rng.uniform(0, 3, 300)
-    matrix = np.column_stack(
-        [
-            rng.uniform(1e4, 5e5, 300),
-            rng.integers(21, 70, 300),
-            rng.uniform(0, 1, 300),
-            delay,
-            rng.uniform(0, 1, 300),
-            rng.integers(1, 5, 300),
-            rng.integers(0, 2, 300),
-        ]
-    )
-    model = XGBClassifier(n_estimators=20, max_depth=2).fit(matrix, (delay > 0.5).astype(int))
-    settings.models_dir.mkdir(parents=True, exist_ok=True)
-    joblib.dump(
-        {
-            "model": model,
-            "model_name": "XGBoost (tuned)",
-            "features": FEATURES,
-            "target": "default payment next month",
-            "threshold": 0.5,
-            "test_metrics": {"accuracy": 0.74, "recall": 0.62, "roc_auc": 0.77},
-        },
-        settings.models_dir / MODEL_FILE,
-    )
+    """The notebook's model files, with a small model in which late payers default."""
+    save_model_files(settings.risk_model_dir)
 
 
 def predict(client, data: bytes, name="customers.csv"):

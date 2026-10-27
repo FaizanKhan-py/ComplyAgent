@@ -1,7 +1,13 @@
 import type {
   ActivityEvent,
   AdminConfig,
+  AssistantReply,
+  AssistantRequest,
+  AuditList,
+  AuditQuery,
   AuthStatus,
+  CollectionsDashboard,
+  Conversation,
   CustomerCreate,
   CustomerCreated,
   CustomerDetail,
@@ -10,6 +16,11 @@ import type {
   CustomerQuery,
   DatasetPrediction,
   DeleteResult,
+  FollowUp,
+  FollowUpRun,
+  Inbox,
+  Ledger,
+  MailboxPoll,
   Health,
   KnowledgeBaseStats,
   PolicyDocument,
@@ -19,6 +30,8 @@ import type {
   QueryResponse,
   RegisterRequest,
   SessionInfo,
+  SimulateRequest,
+  Simulation,
   User,
 } from './types'
 
@@ -84,7 +97,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   }
 
   if (response.ok) return (await response.json()) as T
+  throw await failure(response, options.session !== false)
+}
 
+/** The ApiError for a failed response. A 401 on a signed-in call means the session is gone. */
+async function failure(response: Response, session = true): Promise<ApiError> {
   let code = 'http_error'
   let message = `The server returned an error (HTTP ${response.status}).`
   try {
@@ -100,11 +117,86 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
       message = 'Cannot reach the ComplyAgent API. Check that the backend is running.'
     }
   }
-  if (response.status === 401 && options.session !== false) {
+  if (response.status === 401 && session) {
     csrfToken = null
     onUnauthorized?.()
   }
-  throw new ApiError(response.status, code, message)
+  return new ApiError(response.status, code, message)
+}
+
+async function send(path: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(`${BASE_URL}${path}`, { credentials: BASE_URL ? 'include' : 'same-origin', ...init })
+  } catch (error) {
+    if (init.signal?.aborted) throw error
+    throw new ApiError(0, 'network_error', 'Cannot reach the ComplyAgent API. Check that the backend is running.')
+  }
+}
+
+/** Downloads a file the API sends (e.g. the audit trail as CSV) and saves it in the browser. */
+async function download(path: string, fallbackName: string): Promise<void> {
+  const response = await send(path, { method: 'GET' })
+  if (!response.ok) throw await failure(response)
+  const blob = await response.blob()
+  const disposition = response.headers.get('Content-Disposition') ?? ''
+  const name = /filename="([^"]+)"/.exec(disposition)?.[1] ?? fallbackName
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = name
+  document.body.append(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
+
+/** One step the agents report while they work (the backend's server-sent events). */
+export interface AgentStep {
+  node: string
+  actor: string
+  summary: string
+  round: number | null
+}
+
+/**
+ * A POST whose answer is a stream of server-sent events: each `step` goes to `onStep` as the
+ * agents finish it, and the final `done` event's data is the result.
+ */
+async function stream<T>(
+  path: string,
+  body: unknown,
+  onStep: (step: AgentStep) => void,
+  signal?: AbortSignal,
+): Promise<T> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'text/event-stream' }
+  if (csrfToken) headers['X-CSRF-Token'] = csrfToken
+  const response = await send(path, { method: 'POST', headers, body: JSON.stringify(body ?? {}), signal })
+  if (!response.ok || !response.body) throw await failure(response)
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let end: number
+    while ((end = buffer.indexOf('\n\n')) >= 0) {
+      const block = buffer.slice(0, end)
+      buffer = buffer.slice(end + 2)
+      const kind = /^event: (.+)$/m.exec(block)?.[1] ?? 'message'
+      const data = block
+        .split('\n')
+        .filter((line) => line.startsWith('data: '))
+        .map((line) => line.slice(6))
+        .join('\n')
+      if (!data) continue
+      const parsed = JSON.parse(data)
+      if (kind === 'step') onStep(parsed as AgentStep)
+      else if (kind === 'done') return parsed as T
+      else if (kind === 'error') throw new ApiError(parsed.status ?? 500, parsed.code ?? 'http_error', parsed.message)
+    }
+  }
+  throw new ApiError(0, 'network_error', 'The connection closed before the agents finished. Reload to see the result.')
 }
 
 async function startSession(pending: Promise<SessionInfo>): Promise<User> {
@@ -171,6 +263,76 @@ export const api = {
     request<CustomerCreated>('/api/admin/customers', { method: 'POST', json: body }),
   customerGuidance: (id: number, signal?: AbortSignal) =>
     request<CustomerGuidance>(`/api/admin/customers/${id}/guidance`, { method: 'POST', signal }),
+  /** A checked draft from the Decision Agent and the message writer. Nothing is sent. */
+  conversation: (customerId: number) =>
+    request<Conversation | null>(`/api/admin/customers/${customerId}/conversation`),
+  startConversation: (customerId: number, signal?: AbortSignal) =>
+    request<Conversation>(`/api/admin/customers/${customerId}/conversation`, { method: 'POST', signal }),
+  customerReplied: (id: number, body: { subject?: string; body: string }, signal?: AbortSignal) =>
+    request<Conversation>(`/api/admin/conversations/${id}/inbound`, { method: 'POST', json: body, signal }),
+  redraft: (id: number, feedback: string | null, signal?: AbortSignal) =>
+    request<Conversation>(`/api/admin/conversations/${id}/redraft`, { method: 'POST', json: { feedback }, signal }),
+  closeConversation: (id: number, note: string | null) =>
+    request<Conversation>(`/api/admin/conversations/${id}/close`, { method: 'POST', json: { note } }),
+  approveMessage: (id: number, body: { subject?: string; body?: string; note?: string }) =>
+    request<Conversation>(`/api/admin/messages/${id}/approve`, { method: 'POST', json: body }),
+  rejectMessage: (id: number, note: string) =>
+    request<Conversation>(`/api/admin/messages/${id}/reject`, { method: 'POST', json: { note } }),
+  sendMessage: (id: number) => request<Conversation>(`/api/admin/messages/${id}/send`, { method: 'POST' }),
+
+  inbox: () => request<Inbox>('/api/admin/inbox'),
+  collectionsSummary: () => request<CollectionsDashboard>('/api/admin/collections/summary'),
+  pollEmail: () => request<MailboxPoll>('/api/admin/email/poll', { method: 'POST' }),
+  ledger: (customerId: number) => request<Ledger>(`/api/admin/customers/${customerId}/ledger`),
+  recordPayment: (customerId: number, body: { amount: number; paid_on: string; note?: string }) =>
+    request<Ledger>(`/api/admin/customers/${customerId}/payments`, { method: 'POST', json: body }),
+  recordPromise: (customerId: number, body: { due_on: string; amount?: number }) =>
+    request<Ledger>(`/api/admin/customers/${customerId}/promises`, { method: 'POST', json: body }),
+  recordContact: (
+    customerId: number,
+    body: { channel?: 'phone' | 'sms'; outcome: 'reached' | 'no_answer' | 'voicemail'; note?: string },
+  ) => request<Ledger>(`/api/admin/customers/${customerId}/contacts`, { method: 'POST', json: body }),
+  doNotContact: (customerId: number, reason: string) =>
+    request<CustomerDetail>(`/api/admin/customers/${customerId}/do-not-contact`, { method: 'POST', json: { reason } }),
+  liftDoNotContact: (customerId: number, note: string) =>
+    request<CustomerDetail>(`/api/admin/customers/${customerId}/do-not-contact/lift`, {
+      method: 'POST',
+      json: { note },
+    }),
+
+  followUps: (status?: FollowUp['status']) =>
+    request<FollowUp[]>(`/api/admin/follow-ups${status ? `?status=${status}` : ''}`),
+  runDueFollowUps: () => request<FollowUpRun>('/api/admin/follow-ups/run-due', { method: 'POST' }),
+  runFollowUp: (id: number) => request<Conversation>(`/api/admin/follow-ups/${id}/run`, { method: 'POST' }),
+
+  exportAudit: (query: { customer_id?: number; event?: string; since?: string; until?: string } = {}) => {
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(query)) if (value !== undefined && value !== '') params.set(key, String(value))
+    const qs = params.toString()
+    return download(`/api/admin/audit/export${qs ? `?${qs}` : ''}`, 'audit-trail.csv')
+  },
+  /** The same calls as below, streaming each agent step as it finishes. */
+  startConversationLive: (customerId: number, onStep: (step: AgentStep) => void, signal?: AbortSignal) =>
+    stream<Conversation>(`/api/admin/customers/${customerId}/conversation/stream`, {}, onStep, signal),
+  customerRepliedLive: (
+    id: number,
+    body: { subject?: string; body: string },
+    onStep: (step: AgentStep) => void,
+    signal?: AbortSignal,
+  ) => stream<Conversation>(`/api/admin/conversations/${id}/inbound/stream`, body, onStep, signal),
+  redraftLive: (id: number, feedback: string | null, onStep: (step: AgentStep) => void, signal?: AbortSignal) =>
+    stream<Conversation>(`/api/admin/conversations/${id}/redraft/stream`, { feedback }, onStep, signal),
+  audit: (query: AuditQuery = {}) => {
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(query)) if (value !== undefined && value !== '') params.set(key, String(value))
+    const qs = params.toString()
+    return request<AuditList>(`/api/admin/audit${qs ? `?${qs}` : ''}`)
+  },
+  agentGraph: () => request<{ mermaid: string }>('/api/admin/agents/graph'),
+
+  counterfactuals: (customerId: number) => request<Simulation>(`/api/admin/customers/${customerId}/counterfactuals`),
+  simulate: (customerId: number, body: SimulateRequest, signal?: AbortSignal) =>
+    request<Simulation>(`/api/admin/customers/${customerId}/counterfactuals`, { method: 'POST', json: body, signal }),
 
   predictionModel: () => request<PredictionModelInfo>('/api/admin/predict/model'),
   predictDataset: (file: File) => {
@@ -181,4 +343,8 @@ export const api = {
 
   query: (body: QueryRequest, signal?: AbortSignal) =>
     request<QueryResponse>('/api/admin/rag/query', { method: 'POST', json: body, signal }),
+
+  /** Ask the AI Assistant (any signed-in user). The server keeps the conversation. */
+  assistantChat: (body: AssistantRequest, signal?: AbortSignal) =>
+    request<AssistantReply>('/api/assistant/chat', { method: 'POST', json: body, signal }),
 }

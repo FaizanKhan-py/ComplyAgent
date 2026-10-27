@@ -1,12 +1,20 @@
 import { Link, useLocation, useParams } from 'react-router-dom'
 import { api } from '../api/client'
 import type { CustomerDetail } from '../api/types'
+import { CollectionsConversation } from '../components/CollectionsConversation'
+import { DoNotContact } from '../components/DoNotContact'
+import { LedgerPanel } from '../components/LedgerPanel'
 import { PolicyGuidance } from '../components/PolicyGuidance'
+import { Simulator } from '../components/Simulator'
 import { PaymentStrip, ProbabilityGauge } from '../components/visuals'
 import { ActualBadge, PaymentBadge, RiskBadge } from '../components/RiskBadge'
 import { ErrorState, Loading, Notice, PageHeader } from '../components/ui'
 import { useResource } from '../hooks/useResource'
 import { formatMoney, formatPercent } from '../lib/format'
+
+function monthsLate(months: number): string {
+  return `${months} month${months === 1 ? '' : 's'}`
+}
 
 const SPLIT_NOTE = {
   train: 'This customer was used to train the model, so the prediction is not an independent test.',
@@ -54,12 +62,17 @@ export function CustomerRecord() {
   const id = Number(useParams().customerId)
   const record = useResource(() => api.getCustomer(id))
   const c = record.data
-  // Set by the "Add customer" page when it brings the person here after saving.
-  const created = useLocation().state as { created?: boolean; scored?: boolean } | null
+  // `created`/`scored`: set by the "Add customer" page after saving. `from`: the list, with its
+  // filters, that the person opened this record from.
+  const state = useLocation().state as { created?: boolean; scored?: boolean; from?: string } | null
+  const created = state
+  const back = state?.from?.startsWith('/customers') ? state.from : '/customers'
+
+  const overdue = c?.latest_status != null && c.latest_status > 0
 
   return (
     <>
-      <Link className="back-link" to="/customers">
+      <Link className="back-link" to={back}>
         ← Customer Records
       </Link>
       {record.loading ? (
@@ -74,11 +87,31 @@ export function CustomerRecord() {
               {created.scored ? ' and scored by the risk model.' : '. Train the model to give them a prediction.'}
             </Notice>
           ) : null}
-          <PageHeader title={`Customer ${c.customer_id}`} eyebrow="Account file" description="Credit card account" />
+          <PageHeader
+            title={`Customer ${c.customer_id}`}
+            eyebrow="Account file"
+            description={
+              c.latest_status !== null && c.latest_status > 0
+                ? `Credit card account · overdue this month (${monthsLate(c.latest_status)} late on the Sep 2005 bill)`
+                : 'Credit card account · not overdue this month'
+            }
+          />
+          <DoNotContact customer={c} onChange={() => void record.refresh()} />
+          <CollectionsConversation
+            key={`${c.customer_id}-${c.do_not_contact ? 'blocked' : 'open'}`}
+            customerId={c.customer_id}
+            email={c.email}
+            overdue={overdue}
+            blocked={Boolean(c.do_not_contact)}
+          />
           <div className="grid grid-2">
             <section className="card" aria-label="Account details">
               <h2>Account details</h2>
               <dl className="details">
+                <div>
+                  <dt>Email</dt>
+                  <dd>{c.email ?? <span className="muted">Not on record</span>}</dd>
+                </div>
                 <div>
                   <dt>Credit limit</dt>
                   <dd>{formatMoney(c.limit_bal)}</dd>
@@ -139,6 +172,10 @@ export function CustomerRecord() {
               </table>
             </div>
           </section>
+
+          <LedgerPanel key={`ledger-${c.customer_id}`} customerId={c.customer_id} />
+
+          <Simulator key={`sim-${c.customer_id}`} customer={c} />
 
           <PolicyGuidance key={c.customer_id} customerId={c.customer_id} />
         </>

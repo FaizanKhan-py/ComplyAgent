@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import io
-import sqlite3
 import time
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app import auth, manage
-from app.config import Settings
-from app.db import Database
-from app.embeddings import HashingEmbedder
+from app import manage
+from app.core import auth
+from app.core.config import Settings
+from app.core.db import Database
 from app.main import create_app
+from app.rag.embeddings import HashingEmbedder
 
 from .helpers import FakeGenerator
 from .test_admin_api import ADMIN_ROUTES
@@ -128,7 +128,7 @@ def test_registration_can_be_turned_off(tmp_path):
 
 def test_passwords_are_stored_only_as_argon2_hashes(anon, settings):
     anon.post("/api/auth/register", json=ADA)
-    with sqlite3.connect(settings.db_path) as conn:
+    with Database.from_settings(settings).connect() as conn:
         stored = conn.execute("SELECT password_hash FROM users").fetchone()[0]
         dump = "\n".join(conn.iterdump())
     assert stored.startswith("$argon2id$") and PASSWORD not in dump
@@ -194,9 +194,10 @@ def test_the_session_token_is_stored_hashed(anon, settings):
     anon.post("/api/auth/register", json=ADA)
     anon.post("/api/auth/login", json={"email": ADA["email"], "password": PASSWORD})
     token = anon.cookies[auth.SESSION_COOKIE]
-    with sqlite3.connect(settings.db_path) as conn:
+    with Database.from_settings(settings).connect() as conn:
         stored = conn.execute("SELECT token_hash FROM sessions").fetchall()
-    assert stored == [(auth.token_hash(token),)] and token not in stored[0][0]
+    assert [row[0] for row in stored] == [auth.token_hash(token)]
+    assert token not in stored[0][0]
 
 
 # --- brute force ------------------------------------------------------------------------------
@@ -225,6 +226,15 @@ def test_a_successful_login_clears_the_failure_count(anon):
             anon.post("/api/auth/login", json={"email": ADA["email"], "password": "nope nope"})
         ok = anon.post("/api/auth/login", json={"email": ADA["email"], "password": PASSWORD})
         assert ok.status_code == 200
+
+
+def test_sign_up_from_an_admin_email_creates_an_admin(tmp_path):
+    settings = Settings(storage_dir=tmp_path, admin_emails=frozenset({"ada@example.com"}))
+    with TestClient(create_app(settings, embedder=HashingEmbedder(), generator=None)) as client:
+        admin = client.post("/api/auth/register", json={**ADA, "email": "ADA@example.com"})
+        other = client.post("/api/auth/register", json={**ADA, "email": "grace@example.com"})
+    assert admin.json()["role"] == "admin"
+    assert other.json()["role"] == "user"
 
 
 def test_sign_up_is_rate_limited_per_client(tmp_path):
@@ -369,7 +379,7 @@ def test_logout_invalidates_the_session_on_the_server(app, user):
 
 
 def test_sessions_expire(settings, user):
-    with sqlite3.connect(settings.db_path) as conn:
+    with Database.from_settings(settings).connect() as conn:
         conn.execute("UPDATE sessions SET expires_at = ?", (int(time.time()) - 1,))
     response = user.get("/api/auth/me")
     assert response.status_code == 401 and error(response) == "unauthorized"

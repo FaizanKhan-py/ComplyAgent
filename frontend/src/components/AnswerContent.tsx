@@ -57,8 +57,11 @@ function AnswerText({ text, sources, idPrefix }: { text: string; sources: Source
   )
 }
 
+/** What an answer needs to be shown: both policy answers and the assistant's replies have it. */
+export type AnswerLike = Pick<QueryResponse, 'answer' | 'answer_mode' | 'insufficient_evidence' | 'sources' | 'model' | 'warning'>
+
 /** One answer: how it was produced, the text with clickable [n] citations, and its sources. */
-export function AnswerContent({ response: r, idPrefix }: { response: QueryResponse; idPrefix: string }) {
+export function AnswerContent({ response: r, idPrefix }: { response: AnswerLike; idPrefix: string }) {
   return (
     <>
       <div className="answer-meta">

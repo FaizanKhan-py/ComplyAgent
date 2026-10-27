@@ -1,7 +1,7 @@
 import json
 
 from app import manage
-from app.portfolio import Portfolio
+from app.customers.portfolio import Portfolio
 
 from .conftest import SAMPLES
 from .test_portfolio_api import ROWS, write_csv
@@ -50,11 +50,11 @@ def test_add_documents_and_evaluate_rag_commands(client, tmp_path, capsys):
     files = [str(p) for p in sorted(SAMPLES.glob("*_policy.*"))]
     assert manage.main(["add-documents", *files], kb=kb) == 0
     assert manage.main(["add-documents", files[0]], kb=kb) == 0  # a duplicate is skipped
-    bad = tmp_path / "notes.docx"
-    bad.write_bytes(b"PK")
+    bad = tmp_path / "notes.rtf"
+    bad.write_bytes(b"{\\rtf1 notes}")
     assert manage.main(["add-documents", str(bad)], kb=kb) == 1
     out = capsys.readouterr().out
-    assert out.count("indexed") == 3 and "already uploaded" in out and "notes.docx" in out
+    assert out.count("indexed") == len(files) and "already uploaded" in out and "notes.rtf" in out
 
     questions = tmp_path / "questions.json"
     questions.write_text(
@@ -76,7 +76,7 @@ def test_add_documents_and_evaluate_rag_commands(client, tmp_path, capsys):
 
 
 def test_the_shipped_question_set_is_valid():
-    from app.evaluation import DEFAULT_QUESTIONS, load_questions
+    from app.rag.evaluation import DEFAULT_QUESTIONS, load_questions
 
     items = load_questions(DEFAULT_QUESTIONS)
     documents = {p.name for p in SAMPLES.glob("*_policy.*")}

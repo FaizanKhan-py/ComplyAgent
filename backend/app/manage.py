@@ -6,13 +6,19 @@ Run from the backend directory with the virtualenv active:
     python -m app.manage set-role --email someone@example.com --role admin
     python -m app.manage reset-password --email someone@example.com
     python -m app.manage list-users
-    python -m app.manage import-customers [--csv path/to/data.csv] [--replace]
-    python -m app.manage train-model
+    python -m app.manage import-customers [--csv path/to/data.csv|.xls|.xlsx] [--replace]
+    python -m app.manage import-emails path/to/data_with_emails.xls
+    python -m app.manage score-customers       # after running the notebook
     python -m app.manage add-documents ../sample_policies/*_policy.*
     python -m app.manage evaluate-rag
+    python -m app.manage run-follow-ups       # the Follow-up Agent: every follow-up now due
+    python -m app.manage poll-email           # read the collections mailbox for replies
+    python -m app.manage set-supervisor --email lead@example.com [--off]
+    python -m app.manage evaluate-agents      # score the agents on sample_policies/agent_eval.json
 
-Sign-up through the web page always creates an ordinary user. Administrators can only be made
-here, by someone who already has access to the server.
+Sign-up through the web page creates an ordinary user, unless the address is listed in
+ADMIN_EMAILS. Otherwise administrators can only be made here, by someone who already has
+access to the server.
 """
 
 from __future__ import annotations
@@ -24,14 +30,16 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from . import auth, evaluation, risk_model
-from .config import BACKEND_DIR, Settings
-from .db import Database, EmailTaken
-from .embeddings import build_embedder
-from .extraction import ValidationError
-from .knowledge_base import DuplicateDocument, KnowledgeBase
-from .llm import build_generator
-from .portfolio import DATA_URL, ImportFailed, Portfolio
+from .core import auth
+from .core.config import BACKEND_DIR, Settings
+from .core.db import Database, EmailTaken
+from .customers.portfolio import DATA_URL, ImportFailed, Portfolio
+from .langchain.llm import build_generator
+from .rag import evaluation
+from .rag.embeddings import build_embedder
+from .rag.extraction import ValidationError
+from .rag.knowledge_base import DuplicateDocument, KnowledgeBase
+from .risk import risk_model
 
 
 def _read_password() -> str:
@@ -114,23 +122,42 @@ def main(
     role = commands.add_parser("set-role", help="promote or demote an existing account")
     role.add_argument("--email", required=True)
     role.add_argument("--role", required=True, choices=auth.ROLES)
+    lead = commands.add_parser(
+        "set-supervisor", help="make an administrator a team lead (the second approval)"
+    )
+    lead.add_argument("--email", required=True)
+    lead.add_argument("--off", action="store_true", help="remove the team lead role")
     reset = commands.add_parser("reset-password", help="set a new password and end all sessions")
     reset.add_argument("--email", required=True)
     commands.add_parser("list-users", help="list every account")
     data = commands.add_parser("import-customers", help="load the UCI credit card default data")
-    data.add_argument("--csv", type=Path, help="a downloaded copy; otherwise it is downloaded")
+    data.add_argument(
+        "--csv",
+        type=Path,
+        help="a downloaded copy (CSV, .xls or .xlsx); otherwise it is downloaded",
+    )
+    emails = commands.add_parser(
+        "import-emails", help="add the EMAIL column of a dataset copy to the loaded customers"
+    )
+    emails.add_argument("file", type=Path)
     data.add_argument("--replace", action="store_true", help="delete the loaded data first")
-    commands.add_parser("train-model", help="train the risk model and score every customer")
+    commands.add_parser(
+        "score-customers", help="score every customer with the model the notebook saved"
+    )
     docs = commands.add_parser("add-documents", help="upload and index policy documents")
     docs.add_argument("files", nargs="+", type=Path)
     check = commands.add_parser("evaluate-rag", help="ask the test questions and score the answers")
     check.add_argument("--questions", type=Path, default=evaluation.DEFAULT_QUESTIONS)
+    commands.add_parser("run-follow-ups", help="carry out the follow-ups that are due")
+    commands.add_parser("poll-email", help="read the collections mailbox for customer replies")
+    agents = commands.add_parser("evaluate-agents", help="score the agents against test cases")
+    agents.add_argument("--cases", type=Path, default=None)
     args = parser.parse_args(argv)
 
     load_dotenv(BACKEND_DIR / ".env")
     settings = Settings.from_env()
     if db is None:
-        db = Database(settings.db_path)
+        db = Database.from_settings(settings)
 
     try:
         if args.command == "list-users":
@@ -139,17 +166,72 @@ def main(
                 print(f"{user['id']:>4}  {user['role']:<5}  {user['email']}  ({user['full_name']})")
             print(f"{len(users)} account(s)")
             return 0
+        if args.command == "import-emails":
+            result = Portfolio(db).import_emails(args.file)
+            print(f"Added email addresses to {result['updated']} customers.")
+            if result["unknown_ids"]:
+                print(
+                    f"Skipped {len(result['unknown_ids'])} rows whose ID is not a loaded customer."
+                )
+            if result["without_email"]:
+                print(f"{result['without_email']} customers still have no email address.")
+            return 0
         if args.command == "import-customers":
             count = Portfolio(db).import_data(args.csv, replace=args.replace)
             print(f"Imported {count} customers from {args.csv or DATA_URL}.")
-            print("Next, score them with: python -m app.manage train-model")
+            print("Next, score them with: python -m app.manage score-customers")
             return 0
         if args.command in ("add-documents", "evaluate-rag"):
             return _knowledge_base_command(args, kb or _build_kb(settings, db))
-        if args.command == "train-model":
-            result = risk_model.train(db, models_dir or settings.models_dir)
+        if args.command == "poll-email":
+            from .decisions.conversation import Conversations, poll_mailbox
+            from .integrations.mail import build_mailer
+
+            kb = kb or _build_kb(settings, db)
+            result = poll_mailbox(
+                kb, Portfolio(db), kb.generator, Conversations(db), build_mailer(settings)
+            )
+            print(
+                f"{result['fetched']} new email(s): {len(result['matched'])} matched to a "
+                f"conversation, {result['unmatched']} left unread for a person."
+            )
+            for failure in result["failed"]:
+                print(
+                    f"Conversation {failure['conversation_id']}: {failure['error']}",
+                    file=sys.stderr,
+                )
+            return 1 if result["failed"] else 0
+        if args.command == "evaluate-agents":
+            from .decisions import agent_evaluation
+
+            kb = kb or _build_kb(settings, db)
+            if kb.generator is None:
+                print(
+                    "No language model is configured: set the AZURE_AI_* settings.", file=sys.stderr
+                )
+                return 1
+            report = agent_evaluation.run(
+                kb, kb.generator, args.cases or agent_evaluation.DEFAULT_CASES
+            )
+            print(agent_evaluation.format_report(report))
+            return 0
+        if args.command == "run-follow-ups":
+            from .decisions import follow_up
+            from .decisions.conversation import Conversations
+
+            kb = kb or _build_kb(settings, db)
+            result = follow_up.run_due(kb, Portfolio(db), kb.generator, Conversations(db))
+            print(f"{result['due']} follow-up(s) due, {len(result['done'])} done.")
+            for failure in result["failed"]:
+                print(f"Follow-up {failure['id']} failed: {failure['error']}", file=sys.stderr)
+            return 1 if result["failed"] else 0
+        if args.command == "score-customers":
+            result = risk_model.score_all(db, models_dir or settings.risk_model_dir)
             test = result["test"]
-            print(f"Trained {risk_model.MODEL_NAME} and scored {result['customers']} customers.")
+            print(
+                f"Scored {result['customers']} customers with {result['model_name']} "
+                f"(trained by the notebook on {result['trained_at'][:10]})."
+            )
             print(
                 f"Test customers: ROC-AUC {test['roc_auc']:.4f}, recall {test['recall']:.4f}, "
                 f"precision {test['precision']:.4f}, accuracy {test['accuracy']:.4f}"
@@ -168,6 +250,14 @@ def main(
             auth.check_password_rules(password, email)
             db.create_user(email, name, auth.hash_password(password), "admin")
             print(f"Created administrator {email}.")
+        elif args.command == "set-supervisor":
+            user = _existing(db, email)
+            if user["role"] != "admin" and not args.off:
+                print(f"{email} must be an administrator first (set-role).", file=sys.stderr)
+                return 1
+            db.set_supervisor(user["id"], not args.off)
+            what = "no longer a team lead" if args.off else "a team lead (second approver)"
+            print(f"{email} is now {what}. Their open sessions were ended.")
         elif args.command == "set-role":
             user = _existing(db, email)
             db.set_role(user["id"], args.role)
@@ -180,7 +270,7 @@ def main(
             print(f"Password changed for {email}. Their open sessions were ended.")
     except auth.AuthError as exc:
         raise SystemExit(exc.message) from exc
-    except (ImportFailed, risk_model.TrainingFailed) as exc:
+    except (ImportFailed, risk_model.ScoringFailed) as exc:
         raise SystemExit(str(exc)) from exc
     except EmailTaken:
         raise SystemExit("That email address already has an account.") from None
