@@ -51,10 +51,11 @@ def call(name: str, args: dict, call_id: str = "1") -> AIMessage:
 
 
 def test_every_prompt_lives_in_one_module_and_keeps_its_placeholders():
-    from app.decisions import decision, messages
+    from app.decisions import decision
+    from app.orchestration import graph
 
     assert decision.DECISION_PROMPT is prompts.DECISION_PROMPT
-    assert messages.MESSAGE_PROMPT is prompts.MESSAGE_PROMPT
+    assert graph.MESSAGE_PROMPT is prompts.MESSAGE_PROMPT  # the writer runs in the graph
     # {amount_due} is text the model must write, not a template variable.
     template = prompts.single_request_template(prompts.MESSAGE_PROMPT)
     assert template.input_variables == ["request"]
