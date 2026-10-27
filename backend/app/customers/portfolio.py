@@ -11,13 +11,12 @@ The data and the model follow notebooks/Data_pipeline_and_Modeling.ipynb.
 from __future__ import annotations
 
 import json
-import sqlite3
 from pathlib import Path
 
 import httpx
 from email_validator import EmailNotValidError, validate_email
 
-from ..core.db import Database, now_iso
+from ..core.db import INTEGRITY_ERRORS, Database, now_iso
 from .tables import TableError, read_table
 
 DATA_URL = "https://archive.ics.uci.edu/static/public/350/data.csv"
@@ -55,10 +54,12 @@ SORT_COLUMNS = {
 # One row per customer with the three engineered features, using the notebook's formulas.
 FEATURES_SQL = """
     SELECT c.customer_id, c.limit_bal, c.age, c.education_code, c.sex, c.default_next_month,
-           COALESCE(SUM(h.repayment_status = -1) * 1.0
-                    / NULLIF(SUM(h.repayment_status NOT IN (-2, 0)), 0), 1.0)
+           COALESCE(SUM(CASE WHEN h.repayment_status = -1 THEN 1 ELSE 0 END) * 1.0
+                    / NULLIF(SUM(CASE WHEN h.repayment_status NOT IN (-2, 0) THEN 1 ELSE 0 END),
+                             0), 1.0)
                AS on_time_payment_rate,
-           AVG(MAX(h.repayment_status, 0) * 1.0) AS avg_payment_delay,
+           AVG(CASE WHEN h.repayment_status > 0 THEN h.repayment_status ELSE 0 END * 1.0)
+               AS avg_payment_delay,
            AVG(h.bill_amt * 1.0 / c.limit_bal) AS avg_credit_utilization
     FROM customers c JOIN monthly_history h ON h.customer_id = c.customer_id
 """
@@ -262,7 +263,7 @@ class Portfolio:
                         record.get("email"),
                     ),
                 )
-            except sqlite3.IntegrityError:
+            except INTEGRITY_ERRORS:
                 raise CustomerExists(customer_id) from None
             conn.executemany(
                 "INSERT INTO monthly_history VALUES (?, ?, ?, ?, ?)",
@@ -296,7 +297,8 @@ class Portfolio:
                 "COALESCE(SUM(default_next_month), 0) AS defaults FROM customers"
             ).fetchone()
             by_month = conn.execute(
-                "SELECT month_no, COUNT(*) AS customers, AVG(repayment_status >= 1) AS late_rate, "
+                "SELECT month_no, COUNT(*) AS customers,"
+                " AVG(CASE WHEN repayment_status >= 1 THEN 1.0 ELSE 0 END) AS late_rate, "
                 "SUM(bill_amt) AS billed, SUM(pay_amt) AS paid FROM monthly_history "
                 "GROUP BY month_no ORDER BY month_no DESC"
             ).fetchall()
@@ -304,13 +306,15 @@ class Portfolio:
                 r["risk_level"]: r
                 for r in conn.execute(
                     f"SELECT {_RISK_SQL} AS risk_level, COUNT(*) AS customers, "
-                    "AVG(c.default_next_month) AS default_rate FROM predictions p "
+                    "AVG(c.default_next_month * 1.0) AS default_rate FROM predictions p "
                     "JOIN customers c ON c.customer_id = p.customer_id GROUP BY 1"
                 )
             }
             by_education = conn.execute(
-                "SELECT education, COUNT(*) AS customers, AVG(default_next_month) AS default_rate "
-                "FROM customers GROUP BY education ORDER BY MIN(education_code = 0), "
+                "SELECT education, COUNT(*) AS customers,"
+                " AVG(default_next_month * 1.0) AS default_rate "
+                "FROM customers GROUP BY education"
+                " ORDER BY MIN(CASE WHEN education_code = 0 THEN 1 ELSE 0 END), "
                 "MIN(CASE education_code WHEN 0 THEN 4 ELSE education_code END)"
             ).fetchall()
         latest = next((m for m in by_month if m["month_no"] == 1), None)

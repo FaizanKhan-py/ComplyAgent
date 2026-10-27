@@ -157,7 +157,7 @@ def main(
     load_dotenv(BACKEND_DIR / ".env")
     settings = Settings.from_env()
     if db is None:
-        db = Database(settings.db_path)
+        db = Database.from_settings(settings)
 
     try:
         if args.command == "list-users":

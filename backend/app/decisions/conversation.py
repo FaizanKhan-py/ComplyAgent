@@ -258,6 +258,22 @@ class Conversations:
                 (status, outcome, now_iso(), follow_up_id),
             )
 
+    def claim_follow_up(self, follow_up_id: int) -> bool:
+        """Marks a scheduled follow-up as running. False: someone else claimed it first."""
+        with self.db.connect() as conn:
+            cur = conn.execute(
+                "UPDATE follow_ups SET status = 'running' WHERE id = ? AND status = 'scheduled'",
+                (follow_up_id,),
+            )
+            return cur.rowcount == 1
+
+    def release_follow_up(self, follow_up_id: int) -> None:
+        with self.db.connect() as conn:
+            conn.execute(
+                "UPDATE follow_ups SET status = 'scheduled' WHERE id = ? AND status = 'running'",
+                (follow_up_id,),
+            )
+
     def cancel_follow_ups(self, conversation_id: int, reason: str) -> int:
         """Scheduled follow-ups that no longer apply (the customer replied, a person took
         over, the conversation closed). Returns how many were cancelled."""
@@ -676,14 +692,17 @@ def receive(
     subject: str | None,
     body: str,
     user: dict,
+    external_id: str | None = None,
 ) -> dict:
-    """The customer's email, stored; then the Communication Agent's answer, if it may write one."""
+    """The customer's email, stored; then the Communication Agent's answer, if it may write one.
+    `external_id`: the mailbox's id for it, so it is never received twice."""
     conversation = open_conversation(store, conversation_id)
     store.supersede_drafts(conversation_id)
     store.cancel_follow_ups(conversation_id, "The customer replied.")
     message_id = store.add_message(
-        conversation_id, direction="inbound", status="received", subject=subject, body=body
-    )
+        conversation_id, direction="inbound", status="received", subject=subject, body=body,
+        external_id=external_id,
+    )  # fmt: skip
     store.audit.record(
         actor(user),
         "message.received",
@@ -1027,13 +1046,23 @@ def poll_mailbox(kb, portfolio: Portfolio, generator, store: Conversations, mail
     matched, unmatched, failed = [], 0, []
     mailbox = {"email": "Collections mailbox"}
     for email in emails:
+        with store.db.connect() as conn:  # already received (two readers, or a lost mark-read)
+            seen = conn.execute(
+                "SELECT 1 FROM conversation_messages WHERE external_id = ?"
+                " AND direction = 'inbound'",
+                (email["id"],),
+            ).fetchone()
+        if seen:
+            mailer.mark_read(email["id"])
+            continue
         conversation = match_email(store, portfolio, email)
         if conversation is None:
             unmatched += 1
             continue
         try:
+            text = email["body"][:5000] or "(empty email)"
             receive(kb, portfolio, generator, store, conversation["id"], email.get("subject"),
-                    email["body"][:5000] or "(empty email)", mailbox)  # fmt: skip
+                    text, mailbox, external_id=email["id"])  # fmt: skip
             mailer.mark_read(email["id"])
             matched.append(conversation["id"])
         except (ConversationError, MailError) as exc:

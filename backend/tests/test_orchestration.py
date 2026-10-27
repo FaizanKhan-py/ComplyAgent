@@ -6,7 +6,6 @@ Customer 1 is 2 months late with a latest bill of NT$4,000; customer 2 is not ov
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -87,10 +86,10 @@ def test_the_audit_trail_cannot_be_changed(client, indexed, generator, tmp_path)
     load(client, tmp_path)
     start(client, generator, analysis(), decision(), draft(), review())
     db = client.app.state.kb.db
-    with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+    with pytest.raises(Exception, match="append-only"):  # noqa: B017 - either database
         with db.connect() as conn:
             conn.execute("UPDATE audit_log SET actor = 'someone else'")
-    with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+    with pytest.raises(Exception, match="append-only"):  # noqa: B017 - either database
         with db.connect() as conn:
             conn.execute("DELETE FROM audit_log")
 

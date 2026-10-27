@@ -184,6 +184,32 @@ customer. Replies are read with *Check the mailbox* on the Approvals page,
 `.venv\Scripts\python -m app.manage run-follow-ups` (for a scheduled task). To have the
 backend run them itself, set `FOLLOW_UP_INTERVAL_MINUTES=60` in `backend/.env`.
 
+## Deploy to Azure
+
+`deploy/azure/deploy.ps1` builds the image in Azure and deploys `deploy/azure/main.bicep`:
+
+| Resource | What it runs |
+|---|---|
+| Container App `complyagent-web` | the API and the React app (one image, `Dockerfile`), 1-3 replicas over HTTPS |
+| Container Apps job, every 15 min | `python -m app.manage run-follow-ups` |
+| Container Apps job, every 5 min | `python -m app.manage poll-email` (only with `EMAIL_PROVIDER=graph`) |
+| Azure Database for PostgreSQL | the database (`DATABASE_URL`), instead of the SQLite file |
+| Azure Files share | the uploaded policy documents, shared by every replica |
+
+```powershell
+az login
+./deploy/azure/deploy.ps1 -ResourceGroup complyagent-rg -AzureAiEndpoint https://<name>.openai.azure.com/ -AdminEmails you@example.com
+```
+
+It asks for the PostgreSQL password, the Azure AI key and an admin API token, and prints the
+commands that load the data and the policies once. On Azure the schedulers run as jobs, not
+inside the web app: a follow-up is claimed before it runs and a mailbox email is never received
+twice, so the jobs and several web replicas can run side by side.
+
+**PostgreSQL locally:** set `DATABASE_URL=postgresql://user:password@localhost:5432/complyagent`
+in `backend/.env`. Without it the backend uses the SQLite file in `backend/storage/`. To run the
+tests on PostgreSQL too, set `TEST_DATABASE_URL` (each test gets its own schema).
+
 ## Retrain the model
 
 The notebook is the only place the model is trained. To change it, edit and run the notebook;

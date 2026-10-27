@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-import sqlite3
 import time
 
 import pytest
@@ -129,7 +128,7 @@ def test_registration_can_be_turned_off(tmp_path):
 
 def test_passwords_are_stored_only_as_argon2_hashes(anon, settings):
     anon.post("/api/auth/register", json=ADA)
-    with sqlite3.connect(settings.db_path) as conn:
+    with Database.from_settings(settings).connect() as conn:
         stored = conn.execute("SELECT password_hash FROM users").fetchone()[0]
         dump = "\n".join(conn.iterdump())
     assert stored.startswith("$argon2id$") and PASSWORD not in dump
@@ -195,9 +194,10 @@ def test_the_session_token_is_stored_hashed(anon, settings):
     anon.post("/api/auth/register", json=ADA)
     anon.post("/api/auth/login", json={"email": ADA["email"], "password": PASSWORD})
     token = anon.cookies[auth.SESSION_COOKIE]
-    with sqlite3.connect(settings.db_path) as conn:
+    with Database.from_settings(settings).connect() as conn:
         stored = conn.execute("SELECT token_hash FROM sessions").fetchall()
-    assert stored == [(auth.token_hash(token),)] and token not in stored[0][0]
+    assert [row[0] for row in stored] == [auth.token_hash(token)]
+    assert token not in stored[0][0]
 
 
 # --- brute force ------------------------------------------------------------------------------
@@ -379,7 +379,7 @@ def test_logout_invalidates_the_session_on_the_server(app, user):
 
 
 def test_sessions_expire(settings, user):
-    with sqlite3.connect(settings.db_path) as conn:
+    with Database.from_settings(settings).connect() as conn:
         conn.execute("UPDATE sessions SET expires_at = ?", (int(time.time()) - 1,))
     response = user.get("/api/auth/me")
     assert response.status_code == 401 and error(response) == "unauthorized"

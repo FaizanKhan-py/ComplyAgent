@@ -88,7 +88,7 @@ def create_app(
     embedder = embedder or build_embedder(settings)
     if generator is _UNSET:
         generator = build_generator(settings)
-    kb = KnowledgeBase(settings, Database(settings.db_path), embedder, generator)
+    kb = KnowledgeBase(settings, Database.from_settings(settings), embedder, generator)
     portfolio = Portfolio(kb.db)
     predictor = Predictor(settings.risk_model_dir)
     mailer = mailer or build_mailer(settings)
@@ -246,9 +246,30 @@ def create_app(
     # --- public ----------------------------------------------------------------------------
 
     # This server is API-only (the UI is the Vite app); send browsers that land on it to the docs.
-    @app.get("/", include_in_schema=False)
-    def root():
-        return RedirectResponse("/docs")
+    # The built web app (frontend/dist, copied to FRONTEND_DIR by the Dockerfile) is served from
+    # the same origin as the API, so no CORS is needed. Without it, / opens the API docs.
+    frontend = settings.frontend_dir
+    if frontend and (frontend / "index.html").is_file():
+        from fastapi.staticfiles import StaticFiles
+
+        app.mount("/assets", StaticFiles(directory=frontend / "assets"), name="assets")
+        index = (frontend / "index.html").read_text(encoding="utf-8")
+
+        @app.get("/{path:path}", include_in_schema=False)
+        def web_app(path: str):
+            if path.startswith("api/"):
+                raise ApiError(404, "not_found", "No such API route.")
+            file = (frontend / path).resolve()
+            if path and file.is_file() and frontend.resolve() in file.parents:
+                from fastapi.responses import FileResponse
+
+                return FileResponse(file)
+            return Response(index, media_type="text/html")  # the app's own routes
+    else:
+
+        @app.get("/", include_in_schema=False)
+        def root():
+            return RedirectResponse("/docs")
 
     @app.get("/favicon.ico", include_in_schema=False)
     def favicon():

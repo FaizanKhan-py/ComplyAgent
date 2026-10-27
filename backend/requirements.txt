@@ -25,6 +25,9 @@ fastembed>=0.5
 # Scoring with the model the notebook saves (backend/models/risk_model/model.json).
 xgboost>=2.1
 
+# PostgreSQL, used instead of the SQLite file when DATABASE_URL is set (Azure deployment).
+psycopg[binary]>=3.2
+
 # Reading uploaded .xls and .xlsx datasets.
 xlrd>=2.0
 openpyxl>=3.1

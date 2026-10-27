@@ -1,7 +1,6 @@
-import sqlite3
-
 from fastapi.testclient import TestClient
 
+from app.core.db import Database
 from app.main import create_app
 from app.rag.embeddings import HashingEmbedder
 
@@ -10,7 +9,7 @@ from .helpers import BrokenEmbedder, make_pdf
 
 
 def chunk_rows(settings, doc_id=None):
-    with sqlite3.connect(settings.db_path) as conn:
+    with Database.from_settings(settings).connect() as conn:
         if doc_id:
             return conn.execute(
                 "SELECT COUNT(*) FROM chunks WHERE document_id = ?", (doc_id,)

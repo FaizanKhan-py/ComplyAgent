@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import uuid
 from pathlib import Path
 
 import pytest
@@ -16,15 +18,27 @@ TOKEN = "test-admin-token"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
 
+# Set TEST_DATABASE_URL to run the tests against PostgreSQL: each test gets a schema of its
+# own, dropped afterwards. Without it they use SQLite files in tmp_path.
+TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()
+
+
 @pytest.fixture
-def settings(tmp_path) -> Settings:
+def settings(tmp_path):
     # A model folder of its own, so tests never use the real notebook model in backend/models.
-    return Settings(
+    schema = f"test_{uuid.uuid4().hex[:12]}" if TEST_DATABASE_URL else ""
+    yield Settings(
         storage_dir=tmp_path / "storage",
         risk_model_dir=tmp_path / "risk_model",
         admin_api_token=TOKEN,
         max_upload_mb=1,
+        database_url=TEST_DATABASE_URL,
+        database_schema=schema,
     )
+    if schema:
+        from app.core import pg
+
+        pg.drop_schema(TEST_DATABASE_URL, schema)
 
 
 @pytest.fixture(autouse=True)

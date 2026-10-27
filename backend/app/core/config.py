@@ -46,6 +46,11 @@ class Settings:
         default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
     )
     storage_dir: Path = BACKEND_DIR / "storage"
+    # PostgreSQL instead of the SQLite file in storage_dir, e.g. on Azure:
+    # postgresql://user:password@server.postgres.database.azure.com:5432/complyagent?sslmode=require
+    database_url: str = ""
+    database_schema: str = ""  # a PostgreSQL schema other than public
+    frontend_dir: Path | None = None  # the built web app to serve (the Docker image sets it)
     # The model files the notebook saves (model.json, metadata.json, data_split.csv).
     risk_model_dir: Path = BACKEND_DIR / "models" / "risk_model"
     max_upload_mb: int = 20
@@ -173,6 +178,9 @@ class Settings:
             kwargs["risk_model_dir"] = Path(risk_model).expanduser().resolve()
         return cls(
             app_env=os.getenv("APP_ENV", "development").strip() or "development",
+            database_url=os.getenv("DATABASE_URL", "").strip(),
+            database_schema=os.getenv("DATABASE_SCHEMA", "").strip(),
+            frontend_dir=Path(os.getenv("FRONTEND_DIR")) if os.getenv("FRONTEND_DIR") else None,
             admin_api_token=os.getenv("ADMIN_API_TOKEN", "").strip(),
             max_upload_mb=_int("MAX_UPLOAD_MB", 20),
             chunk_size=_int("CHUNK_SIZE", 500),

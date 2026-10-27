@@ -1,6 +1,10 @@
-"""SQLite store: the knowledge base (documents, chunks, embeddings), user accounts, the
+"""The database: the knowledge base (documents, chunks, embeddings), user accounts, the
 customer portfolio (customers, payment history, risk predictions) and the collections
-conversations (each customer's email thread, with every draft and who approved it)."""
+conversations (each customer's email thread, with every draft and who approved it).
+
+SQLite (one file in storage/) by default; PostgreSQL when DATABASE_URL is set (pg.py), which is
+what a deployment with more than one server uses. The SQL is written once, for both.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +16,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+
+try:  # PostgreSQL support (requirements.txt); SQLite needs nothing extra
+    import psycopg
+
+    from . import pg
+
+    INTEGRITY_ERRORS: tuple = (sqlite3.IntegrityError, psycopg.IntegrityError)
+except ImportError:  # pragma: no cover - psycopg is installed with the backend
+    pg = None
+    INTEGRITY_ERRORS = (sqlite3.IntegrityError,)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -226,20 +240,50 @@ def now_iso() -> str:
 
 
 class Database:
-    def __init__(self, path: Path) -> None:
+    """`path`: the SQLite file. `url`: a PostgreSQL URL, used instead when given; `schema`: the
+    PostgreSQL schema to use (tests give each test its own)."""
+
+    def __init__(self, path: Path, url: str | None = None, schema: str | None = None) -> None:
         self.path = path
-        path.parent.mkdir(parents=True, exist_ok=True)
+        self.url = url or None
+        self.schema = schema or None
+        if self.url and pg is None:
+            raise RuntimeError("DATABASE_URL needs psycopg: pip install -r requirements.txt")
+        if self.url:
+            if self.schema:
+                pg.create_schema(self.url, self.schema)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
+            if self.url:  # several servers may start at once: one creates the tables
+                conn.execute("SELECT pg_advisory_xact_lock(7210731)")
             conn.executescript(SCHEMA)
             for table, added in _ADDED_COLUMNS.items():
-                columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+                columns = self._columns(conn, table)
                 for name, kind in added.items():
                     if name not in columns:
                         conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
 
+    @classmethod
+    def from_settings(cls, settings) -> Database:
+        return cls(settings.db_path, settings.database_url, settings.database_schema)
+
+    @property
+    def dialect(self) -> str:
+        return "postgresql" if self.url else "sqlite"
+
+    def _columns(self, conn, table: str) -> set[str]:
+        if self.url:
+            return pg.columns(conn, table)
+        return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
         """One short-lived connection per operation; commits on success, rolls back on error."""
+        if self.url:
+            with pg.connect(self.url, self.schema) as conn:
+                yield conn
+            return
         conn = sqlite3.connect(self.path, timeout=30)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
@@ -265,7 +309,7 @@ class Database:
                     "updated_at) VALUES (?, ?, ?, ?, ?, ?)",
                     (email, full_name, password_hash, role, now, now),
                 )
-        except sqlite3.IntegrityError as exc:
+        except INTEGRITY_ERRORS as exc:
             raise EmailTaken from exc
         return self.get_user_by_email(email)
 
@@ -495,7 +539,8 @@ class Database:
                 "SELECT COALESCE(SUM(char_count), 0) AS n FROM documents WHERE status = 'indexed'"
             ).fetchone()["n"]
             chunks = conn.execute(
-                "SELECT COUNT(*) AS n, COALESCE(SUM(c.embedding_model = ?), 0) AS current "
+                "SELECT COUNT(*) AS n,"
+                " COALESCE(SUM(CASE WHEN c.embedding_model = ? THEN 1 ELSE 0 END), 0) AS current "
                 "FROM chunks c JOIN documents d ON d.id = c.document_id WHERE d.status = 'indexed'",
                 (embedding_model,),
             ).fetchone()

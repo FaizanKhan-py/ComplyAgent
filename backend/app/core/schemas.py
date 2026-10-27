@@ -579,7 +579,7 @@ class FollowUp(BaseModel):
     due_at: str
     action: Literal["send_reminder", "schedule_call", "escalate_to_human"]
     reason: str
-    status: Literal["scheduled", "done", "cancelled"]
+    status: Literal["scheduled", "running", "done", "cancelled"]
     outcome: str | None
     created_at: str
     done_at: str | None

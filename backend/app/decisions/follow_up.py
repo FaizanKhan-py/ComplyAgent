@@ -270,8 +270,19 @@ def run(
     follow_up = store.get_follow_up(follow_up_id)
     if follow_up is None:
         raise ConversationError(404, "not_found", "Follow-up not found.")
-    if follow_up["status"] != "scheduled":
-        raise ConversationError(409, "wrong_status", f"This follow-up is {follow_up['status']}.")
+    # Claimed first, atomically: two schedulers (or a click and a scheduler) never run it twice.
+    if follow_up["status"] != "scheduled" or not store.claim_follow_up(follow_up_id):
+        status = store.get_follow_up(follow_up_id)["status"]
+        raise ConversationError(409, "wrong_status", f"This follow-up is {status}.")
+    try:
+        return _carry_out(kb, portfolio, generator, store, follow_up, by)
+    except Exception:
+        store.release_follow_up(follow_up_id)  # stays scheduled, to be tried again
+        raise
+
+
+def _carry_out(kb, portfolio, generator, store: Conversations, follow_up: dict, by: str) -> dict:
+    follow_up_id = follow_up["id"]
     conversation = store.get(follow_up["conversation_id"])
     ids = {"customer_id": conversation["customer_id"], "conversation_id": conversation["id"]}
     if conversation["status"] != "open":
