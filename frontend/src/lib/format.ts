@@ -8,7 +8,7 @@ export function formatNumber(value: number): string {
   return new Intl.NumberFormat().format(value)
 }
 
-/** Whole New Taiwan dollars, the currency of the customer data. */
+
 export function formatMoney(value: number | null): string {
   if (value === null) return '—'
   return new Intl.NumberFormat(undefined, {
