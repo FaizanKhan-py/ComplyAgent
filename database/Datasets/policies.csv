@@ -1,0 +1,11 @@
+policy_id,title,category,content,effective_date
+1,Contact hours,contact,Customers may only be contacted between 8:00 AM and 9:00 PM local time.,2005-01-01
+2,Contact frequency,contact,A customer may be contacted at most 3 times per week across all channels.,2005-01-01
+3,Preferred channel,contact,Use the customer's preferred channel first. Do not switch channels without a reason.,2005-01-01
+4,No threats,conduct,"Messages must be polite. Threats, shaming and false claims of legal action are not allowed.",2005-01-01
+5,Hardship handling,hardship,"If the customer reports hardship, offer a payment plan discussion and do not escalate before human review.",2005-01-01
+6,Payment plan offer,hardship,A payment plan may be offered when the customer cannot pay in full. Minimum first payment is 25% of the overdue amount.,2005-01-01
+7,Broken promise,follow_up,"After a broken promise, follow up within 3 days and offer a revised plan before escalating.",2005-01-01
+8,Escalation rule,escalation,Escalate to a human officer after 60 days overdue or 2 broken promises.,2005-01-01
+9,Privacy,privacy,Do not share account details with anyone other than the customer. Do not include full account numbers in messages.,2005-01-01
+10,Human approval,approval,Every recommended action must be reviewed and approved by a human officer before it is sent.,2005-01-01
