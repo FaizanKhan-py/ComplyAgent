@@ -238,7 +238,7 @@ function CustomerRow({ row, open, onToggle }: { row: AutopilotRow; open: boolean
     <tr className={open ? 'live-row live-row-open' : 'live-row'} onClick={onToggle}>
       <td>
         <button type="button" className="btn btn-ghost btn-sm" aria-expanded={open} onClick={(e) => (e.stopPropagation(), onToggle())}>
-          {open ? '▾' : '▸'} #{row.customer_id}
+          {open ? '▾' : '▸'} {row.name ?? `#${row.customer_id}`}
         </button>
         <div className="muted small">{row.email ?? 'no email'}</div>
       </td>

@@ -95,6 +95,13 @@ class Settings:
     # reaches a real person.
     email_redirect_to: str = ""
     email_poll_minutes: int = 0  # read the mailbox every N minutes; 0 only on request
+    # EMAIL_PROVIDER=smtp: any mailbox with SMTP and IMAP, e.g. Gmail with an app password.
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from_name: str = "ComplyAgent Collections"
+    imap_host: str = "imap.gmail.com"
     # Autopilot (autopilot/): the event-driven agents run in the background, with no button.
     autopilot_enabled: bool = False
     autopilot_workers: int = 2  # tasks processed at the same time
@@ -117,8 +124,10 @@ class Settings:
             raise ValueError("The sign-in and sign-up limits must be at least 1")
         if self.is_production and self.cookie_secure is False:
             raise ValueError("COOKIE_SECURE cannot be false when APP_ENV=production")
-        if self.email_provider not in ("none", "graph"):
-            raise ValueError("EMAIL_PROVIDER must be none or graph")
+        if self.email_provider not in ("none", "graph", "smtp"):
+            raise ValueError("EMAIL_PROVIDER must be none, graph or smtp")
+        if self.email_provider == "smtp" and not (self.smtp_user and self.smtp_password):
+            raise ValueError("EMAIL_PROVIDER=smtp needs SMTP_USER and SMTP_PASSWORD")
         if self.email_provider == "graph":
             missing = [
                 name
@@ -225,6 +234,12 @@ class Settings:
             graph_mailbox=os.getenv("GRAPH_MAILBOX", "").strip(),
             email_redirect_to=os.getenv("EMAIL_REDIRECT_TO", "").strip(),
             email_poll_minutes=_int("EMAIL_POLL_MINUTES", 0),
+            smtp_host=os.getenv("SMTP_HOST", "smtp.gmail.com").strip() or "smtp.gmail.com",
+            smtp_port=_int("SMTP_PORT", 587),
+            smtp_user=os.getenv("SMTP_USER", "").strip(),
+            smtp_password=os.getenv("SMTP_PASSWORD", "").replace(" ", ""),
+            smtp_from_name=os.getenv("SMTP_FROM_NAME", "").strip() or "ComplyAgent Collections",
+            imap_host=os.getenv("IMAP_HOST", "imap.gmail.com").strip() or "imap.gmail.com",
             autopilot_enabled=bool(_bool("AUTOPILOT_ENABLED", False)),
             autopilot_workers=max(1, _int("AUTOPILOT_WORKERS", 2)),
             autopilot_max_cases=max(0, _int("AUTOPILOT_MAX_CASES", 5)),

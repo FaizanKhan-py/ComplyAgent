@@ -724,6 +724,7 @@ export interface DecisionPlan {
 export interface AutopilotRow {
   customer_id: number
   email: string | null
+  name: string | null
   risk_level: RiskLevel | null
   default_probability: number | null
   months_late: number

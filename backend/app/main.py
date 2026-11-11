@@ -1025,7 +1025,7 @@ def create_app(
 
         def body():
             seen, quiet = None, 0
-            for _ in range(1800):  # an hour; the browser reconnects by itself
+            for _ in range(30):  # a minute, so a reload never waits on it; the browser reconnects
                 version = pilot.store.version()
                 if version != seen:
                     seen, quiet = version, 0

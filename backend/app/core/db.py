@@ -216,7 +216,7 @@ USER_COLUMNS = "id, email, full_name, role, supervisor, created_at, last_login_a
 
 # Columns added after a table was first released, created on older databases at start-up.
 _ADDED_COLUMNS = {
-    "customers": {"email": "TEXT"},
+    "customers": {"email": "TEXT", "name": "TEXT"},
     "follow_ups": {"last_message_id": "INTEGER", "last_contact_id": "INTEGER"},
     # A team lead: may give the second approval that payment-plan emails need (four eyes).
     "users": {"supervisor": "INTEGER NOT NULL DEFAULT 0"},

@@ -4,6 +4,8 @@
                   system, and replies are pasted in by hand
     GraphMailer   EMAIL_PROVIDER=graph: an app registration (client credentials) sends from the
                   collections mailbox and reads its inbox for the customers' replies
+    SmtpMailer    EMAIL_PROVIDER=smtp: any mailbox with SMTP and IMAP (Gmail: an app password).
+                  A reply is matched by its In-Reply-To header, the Message-ID we sent
 
     send(to, subject, body)   -> {delivered, external_id, external_conversation_id}
     unread()                  -> the inbox's unread emails, as plain text
@@ -170,7 +172,108 @@ class GraphMailer:
         self._call("PATCH", f"/users/{self.mailbox}/messages/{message_id}", json={"isRead": True})
 
 
+class SmtpMailer:
+    provider = "smtp"
+    LOOKBACK_DAYS = 14  # only recent unread emails are read, never a whole old inbox
+
+    def __init__(self, settings: Settings) -> None:
+        self.host, self.port = settings.smtp_host, settings.smtp_port
+        self.user, self._password = settings.smtp_user, settings.smtp_password
+        self.from_name, self.imap_host = settings.smtp_from_name, settings.imap_host
+        self.mailbox = self.user
+        self.redirect_to = settings.email_redirect_to or None
+
+    def send(self, to: str, subject: str, body: str, customer_id: int) -> dict:
+        import smtplib
+        from email.message import EmailMessage
+        from email.utils import formataddr, make_msgid
+
+        recipient = self.redirect_to or to
+        if self.redirect_to:
+            subject = f"[TEST for customer {customer_id}] {subject}"
+        message = EmailMessage()
+        message_id = make_msgid(domain=self.user.split("@")[-1])
+        message["From"] = formataddr((self.from_name, self.user))
+        message["To"] = recipient
+        message["Subject"] = subject
+        message["Message-ID"] = message_id
+        message.set_content(body)
+        try:
+            with smtplib.SMTP(self.host, self.port, timeout=30) as smtp:
+                smtp.starttls()
+                smtp.login(self.user, self._password)
+                smtp.send_message(message)
+        except (smtplib.SMTPException, OSError) as exc:
+            raise MailError(f"The email could not be sent ({type(exc).__name__}). Check SMTP_USER "
+                            "and SMTP_PASSWORD (Gmail: an app password).") from exc  # fmt: skip
+        return {
+            "delivered": True,
+            "external_id": message_id,
+            "external_conversation_id": message_id,
+        }
+
+    def _imap(self):
+        import imaplib
+
+        try:
+            imap = imaplib.IMAP4_SSL(self.imap_host, 993, timeout=30)
+            imap.login(self.user, self._password)
+            imap.select("INBOX")
+        except (imaplib.IMAP4.error, OSError) as exc:
+            raise MailError(f"The mailbox could not be read ({type(exc).__name__}). Check "
+                            "SMTP_USER, SMTP_PASSWORD and that IMAP is on.") from exc  # fmt: skip
+        return imap
+
+    def unread(self) -> list[dict]:
+        import email
+        from datetime import date, timedelta
+        from email import policy
+        from email.utils import parseaddr
+
+        since = (date.today() - timedelta(days=self.LOOKBACK_DAYS)).strftime("%d-%b-%Y")
+        imap = self._imap()
+        try:
+            _, found = imap.uid("search", None, "UNSEEN", "SINCE", since)
+            emails = []
+            for uid in (found[0].split() if found and found[0] else [])[-UNREAD_PAGE:]:
+                _, data = imap.uid("fetch", uid, "(BODY.PEEK[])")
+                raw = next((part[1] for part in data if isinstance(part, tuple)), None)
+                if raw is None:
+                    continue
+                msg = email.message_from_bytes(raw, policy=policy.default)
+                part = msg.get_body(preferencelist=("plain", "html"))
+                text = part.get_content() if part else ""
+                if part is not None and part.get_content_type() == "text/html":
+                    text = re.sub(r"<[^>]+>", " ", text)
+                # The Message-ID it answers: ours, stored as the thread id when we sent it.
+                references = str(msg["References"] or "").split()
+                replied = str(msg["In-Reply-To"] or "").strip() or (
+                    references[-1] if references else ""
+                )
+                emails.append({
+                    "id": f"imap:{uid.decode()}:{msg['Message-ID'] or ''}",
+                    "from": parseaddr(msg["From"] or "")[1].lower(),
+                    "subject": msg["Subject"] or None,
+                    "body": reply_text(text),
+                    "conversation_id": replied or None,
+                    "received_at": msg["Date"],
+                })  # fmt: skip
+            return emails
+        finally:
+            imap.logout()
+
+    def mark_read(self, message_id: str) -> None:
+        uid = message_id.split(":")[1]
+        imap = self._imap()
+        try:
+            imap.uid("store", uid, "+FLAGS", r"(\Seen)")
+        finally:
+            imap.logout()
+
+
 def build_mailer(settings: Settings, client: httpx.Client | None = None):
     if settings.email_provider == "graph":
         return GraphMailer(settings, client)
+    if settings.email_provider == "smtp":
+        return SmtpMailer(settings)
     return RecordOnly()

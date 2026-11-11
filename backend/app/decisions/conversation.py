@@ -52,6 +52,7 @@ from . import compliance_loop, contact_rules, messages
 from .decision import Action, Recommendation
 
 AUTOPILOT = "Autopilot"  # created_by of the conversations the autopilot (autopilot/) runs
+MAIL_SERVICE = {"graph": "Microsoft 365", "smtp": "Gmail (SMTP)"}
 MAX_SENT = 5  # after this many emails without a resolution, a person takes over
 REPLY_REQUIRED = ("reference",)  # a reply needs the reference; the first email needs them all
 
@@ -997,7 +998,7 @@ def send(
     store.audit.record(
         actor(user),
         "draft.sent",
-        "Email sent through Microsoft 365."
+        f"Email sent through {MAIL_SERVICE.get(getattr(mailer, 'provider', ''), 'email')}."
         if result["delivered"]
         else "Email sent (recorded: email delivery is not connected).",
         customer_id=customer_id,

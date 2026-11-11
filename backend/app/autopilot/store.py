@@ -58,7 +58,9 @@ KINDS = ("analyse", "decide", "converse", "escalate")
 # and the ends: escalated (a person has it), waiting (no contact now), resolved, failed
 STAGES = ("queued", "analysing", "deciding", "writing", "awaiting_reply", "escalated", "waiting",
           "resolved", "failed")  # fmt: skip
-IN_FLIGHT = ("queued", "analysing", "deciding", "writing", "awaiting_reply")
+# Customers that hold one of the AUTOPILOT_MAX_CASES places. A failed customer keeps its place
+# until an officer retries it, so a broken model key cannot pull in customer after customer.
+IN_FLIGHT = ("queued", "analysing", "deciding", "writing", "awaiting_reply", "failed")
 MAX_ATTEMPTS = 3
 LEASE_MINUTES = 15  # a task processing longer than this was interrupted: it runs again
 

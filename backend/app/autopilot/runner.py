@@ -312,7 +312,7 @@ def customer_rows(store: Store) -> list[dict]:
     with store.db.connect() as conn:
         rows = conn.execute(
             "SELECT x.customer_id, x.stage, x.note, x.decision, x.updated_at, x.conversation_id,"
-            " c.email, h.repayment_status AS months_late, h.bill_amt AS latest_bill,"
+            " c.email, c.name, h.repayment_status AS months_late, h.bill_amt AS latest_bill,"
             " p.default_probability,"
             " (SELECT COALESCE(SUM(amount), 0) FROM payments y WHERE y.customer_id = x.customer_id)"
             " AS paid"
@@ -336,6 +336,7 @@ def customer_rows(store: Store) -> list[dict]:
         out.append({
             "customer_id": r["customer_id"],
             "email": r["email"],
+            "name": r["name"],
             "risk_level": risk_level(r["default_probability"]),
             "default_probability": r["default_probability"],
             "months_late": max(r["months_late"] or 0, 0),
