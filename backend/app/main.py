@@ -33,6 +33,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from .autopilot import runner as autopilot
 from .core import auth, schemas
 from .core.config import BACKEND_DIR, SUPPORTED_EXTENSIONS, Settings
 from .core.db import Database, EmailTaken, now_iso
@@ -92,6 +93,7 @@ def create_app(
     portfolio = Portfolio(kb.db)
     predictor = Predictor(settings.risk_model_dir)
     mailer = mailer or build_mailer(settings)
+    pilot = autopilot.Autopilot(settings, kb, portfolio, mailer)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -126,8 +128,11 @@ def create_app(
                 args=(stop, settings.follow_up_interval_minutes * 60, kb, portfolio),
                 daemon=True,
             ).start()
+        if settings.autopilot_enabled:
+            pilot.start()
         yield
         stop.set()
+        pilot.stop.set()
 
     app = FastAPI(title="ComplyAgent Admin & RAG API", version="1.0.0", lifespan=lifespan)
     app.state.kb = kb
@@ -292,7 +297,7 @@ def create_app(
     )
     def register(body: schemas.RegisterRequest, request: Request):
         """Creates an account. The role is never taken from the request: it is admin only for
-        addresses listed in ADMIN_EMAILS, otherwise user."""
+        addresses listed in ADMIN_EMAILS (or everyone when it is "*"), otherwise user."""
         _check_origin(request)
         if not settings.allow_registration:
             raise ApiError(403, "registration_closed", "Sign-up is turned off on this server.")
@@ -306,7 +311,8 @@ def create_app(
         except auth.AuthError as exc:
             raise ApiError(422, exc.code, exc.message) from exc
         try:
-            role = "admin" if email in settings.admin_emails else "user"
+            everyone = "*" in settings.admin_emails
+            role = "admin" if everyone or email in settings.admin_emails else "user"
             user = kb.db.create_user(email, full_name, auth.hash_password(body.password), role)
         except EmailTaken:
             raise ApiError(
@@ -978,6 +984,61 @@ def create_app(
         drafts, conversations handed to a person, due follow-ups and calls to make."""
         found = conversations.inbox(now_iso())
         return {**found, "total": sum(len(items) for items in found.values())}
+
+    # --- admin: the autopilot (live operations) --------------------------------------------
+
+    live = {"dependencies": [admin], "tags": ["autopilot"], "responses": ERROR_RESPONSES}
+
+    @app.get("/api/admin/autopilot/overview", **live)
+    def autopilot_overview():
+        """The Monitor Agent's view of the system and every customer the autopilot handles."""
+        return {
+            "monitor": autopilot.snapshot(pilot.store, settings),
+            "customers": autopilot.customer_rows(pilot.store),
+        }
+
+    @app.get("/api/admin/autopilot/customers/{customer_id}", **live)
+    def autopilot_customer(customer_id: int):
+        """One customer's saved context, tasks, emails and full activity timeline."""
+        found = autopilot.customer_detail(pilot.store, conversations, customer_id)
+        if found is None:
+            raise ApiError(404, "not_found", "The autopilot has not handled this customer.")
+        return found
+
+    @app.post("/api/admin/autopilot/tasks/{task_id}/retry", **live)
+    def autopilot_retry(task_id: int, user: dict = admin):
+        """Runs a failed task again."""
+        task = pilot.store.task(task_id)
+        if task is None or not pilot.store.retry(task_id):
+            raise ApiError(409, "not_failed", "Only a failed task can be retried.")
+        if task["customer_id"] is not None:
+            pilot.store.save(task["customer_id"], stage="queued", note="Retried by an officer.")
+        conversations.audit.record(
+            conversation.actor(user), "autopilot.task_retried",
+            f"The {task['kind']} task was run again.", customer_id=task["customer_id"],
+        )  # fmt: skip
+        return {"retried": task_id}
+
+    @app.get("/api/admin/autopilot/stream", response_class=StreamingResponse, **live)
+    def autopilot_stream():
+        """Server-sent events: `change` whenever anything on the live dashboard changes."""
+
+        def body():
+            seen, quiet = None, 0
+            for _ in range(1800):  # an hour; the browser reconnects by itself
+                version = pilot.store.version()
+                if version != seen:
+                    seen, quiet = version, 0
+                    yield f"event: change\ndata: {json.dumps(version)}\n\n"
+                elif (quiet := quiet + 1) % 15 == 0:
+                    yield ": keep-alive\n\n"
+                time.sleep(2)
+
+        return StreamingResponse(
+            body(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     # --- admin: the Follow-up Agent --------------------------------------------------------
 

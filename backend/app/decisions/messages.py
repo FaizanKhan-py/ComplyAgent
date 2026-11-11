@@ -336,13 +336,15 @@ def prepare(
     generator: AnswerGenerator | None,
     customer_id: int,
     case: dict | None = None,
+    decision: dict | None = None,
 ) -> tuple[dict, dict | None] | None:
     """Everything a first email needs, before it is written. None: no such customer.
 
     Returns (result, context). When context is None, result is final: no email is written, and
     result says why. Otherwise context holds the customer, the decision, the passages, the
     placeholder values and the risk level's deadline, and result is the shared part of the reply.
-    `case`: the Case Analyst's result, passed on to the Decision Agent.
+    `case`: the Case Analyst's result, passed on to the Decision Agent. `decision`: a decision
+    already made (the autopilot's Decision Agent), used instead of asking for a new one.
     """
     customer = portfolio.get_customer(customer_id)
     if customer is None:
@@ -375,7 +377,8 @@ def prepare(
         )
         return {**base, "status": "not_written", "reason": reason}, None
 
-    decision = recommend(kb, portfolio, generator, customer_id, case=case)
+    if decision is None:
+        decision = recommend(kb, portfolio, generator, customer_id, case=case)
     rec = decision["recommendation"]
     result = {**base, "decision": rec, "model": decision["model"]}
     if rec.action not in ACTION_BRIEF:

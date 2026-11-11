@@ -38,6 +38,10 @@ ADMIN_ROUTES = [
     ("post", "/api/admin/messages/1/send"),
     ("get", "/api/admin/follow-ups"),
     ("post", "/api/admin/follow-ups/run-due"),
+    ("get", "/api/admin/autopilot/overview"),
+    ("get", "/api/admin/autopilot/customers/1"),
+    ("post", "/api/admin/autopilot/tasks/1/retry"),
+    ("get", "/api/admin/autopilot/stream"),
     ("post", "/api/admin/follow-ups/1/run"),
     ("get", "/api/admin/audit"),
     ("get", "/api/admin/audit/export"),
@@ -79,7 +83,8 @@ def test_every_admin_route_is_covered_by_the_auth_test(client):
             .replace("{customer_id}", "1")
             .replace("{conversation_id}", "1")
             .replace("{message_id}", "1")
-            .replace("{follow_up_id}", "1"),
+            .replace("{follow_up_id}", "1")
+            .replace("{task_id}", "1"),
         )
         for route in client.app.routes
         if getattr(route, "path", "").startswith("/api/admin")

@@ -203,11 +203,13 @@ def recommend(
     customer_id: int,
     case: dict | None = None,
     challenge: list[str] | None = None,
+    extra: str = "",
 ) -> dict | None:
     """The recommendation with the facts and passages it is based on. None: no such customer.
 
     `case`: the Case Analyst's result (case_analyst.analyse); its facts and case file are then
-    part of the request. `challenge`: the Red Team's objections to an earlier choice.
+    part of the request. `challenge`: the Red Team's objections to an earlier choice. `extra`:
+    more context for the request (the autopilot's communication history and newest reply).
 
     Raises DecisionUnavailable when no model or no policy evidence is available, and LLMError
     when the model fails.
@@ -246,6 +248,8 @@ def recommend(
         )
 
     request = build_request(facts, passages, case_file)
+    if extra:
+        request += "\n\n" + extra
     if challenge:
         objections = "\n".join(f"- {c}" for c in challenge)
         request += (

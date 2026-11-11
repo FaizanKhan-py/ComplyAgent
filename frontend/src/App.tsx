@@ -13,6 +13,7 @@ import { Customers } from './pages/Customers'
 import { Documents } from './pages/Documents'
 import { FollowUps } from './pages/FollowUps'
 import { Inbox } from './pages/Inbox'
+import { LiveOperations } from './pages/LiveOperations'
 import { Login } from './pages/Login'
 import { Playground } from './pages/Playground'
 import { PredictDataset } from './pages/PredictDataset'
@@ -80,6 +81,7 @@ export default function App() {
             <Route path="customers/:customerId" element={<CustomerRecord />} />
             <Route path="predict" element={<PredictDataset />} />
             <Route path="collections" element={<CollectionsDashboard />} />
+            <Route path="live" element={<LiveOperations />} />
             <Route path="approvals" element={<Inbox />} />
             <Route path="follow-ups" element={<FollowUps />} />
             <Route path="audit" element={<AuditTrail />} />

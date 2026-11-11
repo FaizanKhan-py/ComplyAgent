@@ -690,3 +690,116 @@ export interface CollectionsDashboard {
     intents: Record<string, number>
   }
 }
+
+// --- Autopilot (live operations) ------------------------------------------------------------
+
+export type AutopilotStage =
+  | 'queued' | 'analysing' | 'deciding' | 'writing' | 'awaiting_reply'
+  | 'escalated' | 'waiting' | 'resolved' | 'failed'
+
+export interface AutopilotTask {
+  id: number
+  customer_id: number | null
+  kind: 'analyse' | 'decide' | 'converse' | 'escalate'
+  status: 'pending' | 'processing' | 'done' | 'failed'
+  payload: Record<string, unknown>
+  result: string | null
+  error: string | null
+  attempts: number
+  worker: string | null
+  available_at: string
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+}
+
+export interface DecisionPlan {
+  tone: 'low' | 'medium' | 'hard'
+  channel: 'email' | 'call' | 'none'
+  hardship_offer: boolean
+  escalate: boolean
+  next: 'email' | 'call' | 'escalate' | 'wait'
+}
+
+export interface AutopilotRow {
+  customer_id: number
+  email: string | null
+  risk_level: RiskLevel | null
+  default_probability: number | null
+  months_late: number
+  outstanding: number
+  stage: AutopilotStage
+  note: string | null
+  plan: DecisionPlan | null
+  task: { kind: AutopilotTask['kind']; status: AutopilotTask['status'] } | null
+  conversation_id: number | null
+  updated_at: string
+}
+
+export interface AutopilotMonitor {
+  health: 'ok' | 'degraded' | 'down' | 'off'
+  enabled: boolean
+  auto_send: boolean
+  max_cases: number
+  workers: { worker: string; seen_at: string; task_id: number | null }[]
+  busy_workers: number
+  tasks: Record<AutopilotTask['status'], number>
+  stages: Partial<Record<AutopilotStage, number>>
+  oldest_pending: string | null
+  today: { emails_sent: number; replies: number; escalations: number; resolved: number; failures: number }
+  processing: AutopilotTask[]
+  failed: AutopilotTask[]
+}
+
+export interface AutopilotOverview {
+  monitor: AutopilotMonitor
+  customers: AutopilotRow[]
+}
+
+export interface AutopilotEvent {
+  id: number
+  created_at: string
+  actor: string
+  event: string
+  summary: string
+  conversation_id: number | null
+  message_id: number | null
+}
+
+export interface AutopilotCustomer {
+  context: {
+    customer_id: number
+    stage: AutopilotStage
+    note: string | null
+    analysis: {
+      analysis: { summary: string; situation: string; urgency: string; care_flags: { text: string }[] }
+      prediction_check: { verdict: string; note: string }
+      communication: { emails_sent: number; replies: number; broken_promises: number; paid_since: number }
+      trigger: string
+      at: string
+    } | null
+    decision: {
+      plan: DecisionPlan
+      recommendation: { action: string; priority: string; reasons: { text: string }[] }
+      trigger: string
+      sources: { number: number; filename: string }[]
+      at: string
+    } | null
+    escalation: { reason: string; kind: string; notified: string[]; delivered: number; at: string } | null
+  }
+  conversation_status: string | null
+  emails: {
+    id: number
+    direction: 'outbound' | 'inbound'
+    status: string
+    subject: string | null
+    body: string
+    intent: string | null
+    intent_summary: string | null
+    created_at: string
+    sent_at: string | null
+    delivered: number
+  }[]
+  tasks: AutopilotTask[]
+  timeline: AutopilotEvent[]
+}

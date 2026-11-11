@@ -95,6 +95,12 @@ class Settings:
     # reaches a real person.
     email_redirect_to: str = ""
     email_poll_minutes: int = 0  # read the mailbox every N minutes; 0 only on request
+    # Autopilot (autopilot/): the event-driven agents run in the background, with no button.
+    autopilot_enabled: bool = False
+    autopilot_workers: int = 2  # tasks processed at the same time
+    autopilot_max_cases: int = 5  # customers in progress at once (each one costs model calls)
+    autopilot_auto_send: bool = True  # False: drafts wait for an officer's approval
+    escalation_email: str = ""  # officers notified of escalations; empty: every administrator
 
     def __post_init__(self) -> None:
         if self.chunk_size < 100:
@@ -219,5 +225,10 @@ class Settings:
             graph_mailbox=os.getenv("GRAPH_MAILBOX", "").strip(),
             email_redirect_to=os.getenv("EMAIL_REDIRECT_TO", "").strip(),
             email_poll_minutes=_int("EMAIL_POLL_MINUTES", 0),
+            autopilot_enabled=bool(_bool("AUTOPILOT_ENABLED", False)),
+            autopilot_workers=max(1, _int("AUTOPILOT_WORKERS", 2)),
+            autopilot_max_cases=max(0, _int("AUTOPILOT_MAX_CASES", 5)),
+            autopilot_auto_send=bool(_bool("AUTOPILOT_AUTO_SEND", True)),
+            escalation_email=os.getenv("ESCALATION_EMAIL", "").strip(),
             **kwargs,
         )

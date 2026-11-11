@@ -8,6 +8,7 @@ import { ChatWidget } from './ChatWidget'
 const NAV = [
   { to: '/', label: 'Risk Dashboard', icon: 'chart', end: true, adminOnly: true },
   { to: '/customers', label: 'Customer Records', icon: 'people', end: false, adminOnly: true },
+  { to: '/live', label: 'Live Operations', icon: 'pulse', end: false, adminOnly: true },
   { to: '/collections', label: 'Collections', icon: 'gauge', end: false, adminOnly: true },
   { to: '/approvals', label: 'Approvals', icon: 'check', end: false, adminOnly: true },
   { to: '/predict', label: 'Predict Dataset', icon: 'upload', end: false, adminOnly: true },
@@ -18,6 +19,7 @@ const NAV = [
 
 const ICON_PATHS = {
   chart: 'M4 20V10m5.5 10V4M15 20v-7m5.5 7V8',
+  pulse: 'M3 12h4l2.5-6 5 12 2.5-6h4',
   people:
     'M16 20v-1.5a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4V20m6.5-9.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm11.5 9.5v-1.5a4 4 0 0 0-3-3.87m-1.5-11a3.5 3.5 0 0 1 0 6.75',
   upload: 'M12 15V4m0 0-4 4m4-4 4 4M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3',

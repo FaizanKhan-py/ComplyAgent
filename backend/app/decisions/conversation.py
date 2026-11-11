@@ -51,6 +51,7 @@ from ..rag.knowledge_base import KnowledgeBase
 from . import compliance_loop, contact_rules, messages
 from .decision import Action, Recommendation
 
+AUTOPILOT = "Autopilot"  # created_by of the conversations the autopilot (autopilot/) runs
 MAX_SENT = 5  # after this many emails without a resolution, a person takes over
 REPLY_REQUIRED = ("reference",)  # a reply needs the reference; the first email needs them all
 
@@ -722,9 +723,9 @@ def receive(
         if conversation["status"] == "open":
             reason = "The customer asked for contact to stop, so a person must answer them."
             escalate(store, conversation, reason, "Communication Agent")
-    elif conversation["status"] == "open":
+    elif conversation["status"] == "open" and conversation["created_by"] != AUTOPILOT:
         _reply(kb, portfolio, generator, store, conversation)
-    elif generator is not None:
+    elif generator is not None:  # a person, or the autopilot's Decision Agent, decides next
         _classify(generator, store, conversation, message_id, subject, body)
     return store.get(conversation_id)
 

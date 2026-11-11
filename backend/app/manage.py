@@ -150,6 +150,7 @@ def main(
     check.add_argument("--questions", type=Path, default=evaluation.DEFAULT_QUESTIONS)
     commands.add_parser("run-follow-ups", help="carry out the follow-ups that are due")
     commands.add_parser("poll-email", help="read the collections mailbox for customer replies")
+    commands.add_parser("run-autopilot", help="run the autopilot's agents in this process")
     agents = commands.add_parser("evaluate-agents", help="score the agents against test cases")
     agents.add_argument("--cases", type=Path, default=None)
     args = parser.parse_args(argv)
@@ -201,6 +202,17 @@ def main(
                     file=sys.stderr,
                 )
             return 1 if result["failed"] else 0
+        if args.command == "run-autopilot":
+            import logging
+
+            from .autopilot.runner import Autopilot
+            from .integrations.mail import build_mailer
+
+            logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
+            kb = kb or _build_kb(settings, db)
+            print("Autopilot running. Press Ctrl+C to stop.")
+            Autopilot(settings, kb, Portfolio(db), build_mailer(settings)).run_forever()
+            return 0
         if args.command == "evaluate-agents":
             from .decisions import agent_evaluation
 

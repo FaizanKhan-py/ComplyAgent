@@ -29,6 +29,7 @@ SERIAL_KEYS = {
     "chunks": "id", "activity": "id", "users": "id", "model_runs": "run_id",
     "conversations": "id", "conversation_messages": "id", "follow_ups": "id",
     "payments": "id", "promises": "id", "contacts": "id", "audit_log": "id",
+    "agent_tasks": "id",
 }  # fmt: skip
 
 

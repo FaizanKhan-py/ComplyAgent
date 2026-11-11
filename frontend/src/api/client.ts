@@ -1,4 +1,6 @@
 import type {
+  AutopilotCustomer,
+  AutopilotOverview,
   ActivityEvent,
   AdminConfig,
   AssistantReply,
@@ -304,6 +306,12 @@ export const api = {
     request<FollowUp[]>(`/api/admin/follow-ups${status ? `?status=${status}` : ''}`),
   runDueFollowUps: () => request<FollowUpRun>('/api/admin/follow-ups/run-due', { method: 'POST' }),
   runFollowUp: (id: number) => request<Conversation>(`/api/admin/follow-ups/${id}/run`, { method: 'POST' }),
+
+  autopilot: () => request<AutopilotOverview>('/api/admin/autopilot/overview'),
+  autopilotCustomer: (id: number) => request<AutopilotCustomer>(`/api/admin/autopilot/customers/${id}`),
+  retryTask: (id: number) => request<{ retried: number }>(`/api/admin/autopilot/tasks/${id}/retry`, { method: 'POST' }),
+  /** Server-sent events: `change` whenever the live dashboard should reload. */
+  autopilotStream: () => new EventSource(`${BASE_URL}/api/admin/autopilot/stream`, { withCredentials: !!BASE_URL }),
 
   exportAudit: (query: { customer_id?: number; event?: string; since?: string; until?: string } = {}) => {
     const params = new URLSearchParams()

@@ -1124,3 +1124,21 @@ input[aria-invalid='true'] { border-color: var(--error); box-shadow: 0 0 0 3px v
 .live-steps { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; font-size: 0.9rem; }
 .live-steps .step-done::before { content: '✓ '; color: var(--primary); font-weight: 700; }
 .live-steps .step-now { color: var(--muted); display: flex; align-items: center; gap: 6px; }
+
+/* Live operations (the autopilot). */
+.live-dot { animation: breathe 1.6s ease-in-out infinite; }
+.live-monitor-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.live-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.live-list li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.live-row { cursor: pointer; }
+.live-row-open, .live-row:hover { background: color-mix(in srgb, var(--surface) 60%, var(--surface-2)); }
+.live-note { max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-agent-busy { font-weight: 600; }
+.live-expand > td { background: var(--surface-2); padding: 16px; }
+.live-detail h3 { margin: 16px 0 6px; }
+.live-detail .grid-2 > div > h3:first-child { margin-top: 0; }
+.live-emails { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.live-email { border: 1px solid var(--rule); border-radius: var(--r-sm); padding: 8px 12px; background: var(--surface); }
+.live-email-in { border-left: 3px solid var(--primary); }
+.live-email-body { white-space: pre-wrap; font: inherit; font-size: 0.875rem; margin: 6px 0 0; max-height: 14em; overflow: auto; }
+.live-timeline { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: 0.875rem; max-height: 22em; overflow: auto; }
