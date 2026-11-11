@@ -95,8 +95,9 @@ function Results({ query, onPage }: { query: CustomerQuery & { page: number }; o
                   <td data-label="Customer">
                     <div>
                       <Link className="filename" to={`/customers/${c.customer_id}`} state={{ from }}>
-                        Customer {c.customer_id}
+                        {c.name ?? `Customer ${c.customer_id}`}
                       </Link>
+                      {c.name ? <span className="muted small"> #{c.customer_id}</span> : null}
                       <div className="muted small">
                         Age {c.age} · {c.education}
                       </div>

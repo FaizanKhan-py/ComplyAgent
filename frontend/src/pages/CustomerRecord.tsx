@@ -88,7 +88,7 @@ export function CustomerRecord() {
             </Notice>
           ) : null}
           <PageHeader
-            title={`Customer ${c.customer_id}`}
+            title={c.name ? `${c.name} (#${c.customer_id})` : `Customer ${c.customer_id}`}
             eyebrow="Account file"
             description={
               c.latest_status !== null && c.latest_status > 0

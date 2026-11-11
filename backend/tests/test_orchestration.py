@@ -122,10 +122,6 @@ def test_sending_schedules_a_follow_up_from_the_policies(client, indexed, genera
     asked = generator.structured_calls[-1]
     assert asked["system"] == FOLLOW_UP_PLAN_PROMPT
     assert "Emails sent so far: 1." in asked["user"]
-    assert (
-        client.get("/api/admin/follow-ups", params={"status": "scheduled"}).json()[0]["id"]
-        == (scheduled["id"])
-    )
 
 
 def test_a_wait_outside_the_limits_is_kept_inside_them(client, indexed, generator, tmp_path):
@@ -172,11 +168,13 @@ def test_a_due_reminder_is_drafted_and_waits_for_approval(client, indexed, gener
 def test_nothing_is_due_before_its_time(client, indexed, generator, tmp_path):
     load(client, tmp_path)
     send_first_email(client, generator, plan())
-    assert client.post("/api/admin/follow-ups/run-due").json() == {
-        "due": 0,
-        "done": [],
-        "failed": [],
-    }
+    from app.customers.portfolio import Portfolio
+    from app.decisions import conversation, follow_up
+
+    kb = client.app.state.kb
+    store = conversation.Conversations(kb.db)
+    result = follow_up.run_due(kb, Portfolio(kb.db), kb.generator, store)
+    assert result == {"due": 0, "done": [], "failed": []}
 
 
 def test_a_reply_cancels_the_follow_up(client, indexed, generator, tmp_path):
@@ -348,39 +346,3 @@ def test_a_streamed_failure_ends_with_an_error_event(client, indexed, generator,
             },
         )
     ]
-
-
-def test_the_collections_dashboard_counts_the_work(client, indexed, generator, tmp_path):
-    from datetime import date
-
-    from .test_conversation import finding
-
-    load(client, tmp_path)
-    empty = client.get("/api/admin/collections/summary").json()
-    assert empty["work"]["pending_approval"] == 0 and empty["promises"]["kept_rate"] is None
-    assert len(empty["activity"]["sent_by_day"]) == 14
-
-    # One conversation: a first email (rewritten once by the Red Team) sent, a promise kept,
-    # then closed.
-    give_email(client)
-    body = start(
-        client, generator, analysis(), decision(), draft(), review(finding()), draft(), review()
-    ).json()
-    message_id = body["messages"][0]["id"]
-    client.post(f"/api/admin/messages/{message_id}/approve", json={})
-    generator.structured_replies = [plan()]
-    client.post(f"/api/admin/messages/{message_id}/send")
-    today = date.today().isoformat()
-    client.post("/api/admin/customers/1/promises", json={"due_on": today, "amount": 1000})
-    client.post("/api/admin/customers/1/payments", json={"amount": 1000, "paid_on": today})
-    client.post(f"/api/admin/conversations/{body['id']}/close", json={"note": "Paid."})
-
-    s = client.get("/api/admin/collections/summary").json()
-    assert s["conversations"]["closed"] == 1
-    assert s["conversations"]["emails_per_resolution"] == 1.0
-    assert (s["promises"]["kept"], s["promises"]["kept_rate"]) == (1, 1.0)
-    assert s["promises"]["collected"] == 1000
-    assert s["compliance"]["first_round_pass_rate"] == 0.0  # it passed on the second round
-    assert s["compliance"]["average_rounds"] == 2.0
-    assert s["activity"]["emails_sent"] == 1
-    assert s["activity"]["sent_by_day"][-1]["emails"] == 1

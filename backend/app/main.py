@@ -38,7 +38,7 @@ from .core import auth, schemas
 from .core.config import BACKEND_DIR, SUPPORTED_EXTENSIONS, Settings
 from .core.db import Database, EmailTaken, now_iso
 from .customers.portfolio import SORT_COLUMNS, CustomerExists, Portfolio
-from .decisions import contact_rules, conversation, dashboard, follow_up
+from .decisions import contact_rules, conversation, follow_up
 from .decisions.decision import DecisionUnavailable, recommend
 from .decisions.guidance import customer_guidance
 from .integrations.mail import build_mailer
@@ -51,8 +51,6 @@ from .rag.extraction import ValidationError
 from .rag.knowledge_base import Busy, DuplicateDocument, KnowledgeBase, NotFound
 from .risk import counterfactual
 from .risk.model_files import ModelMissing
-from .risk.predictor import SUPPORTED_EXTENSIONS as DATASET_EXTENSIONS
-from .risk.predictor import PredictionFailed, Predictor
 from .risk.risk_model import score_customer
 
 logger = logging.getLogger("complyagent.api")
@@ -91,7 +89,6 @@ def create_app(
         generator = build_generator(settings)
     kb = KnowledgeBase(settings, Database.from_settings(settings), embedder, generator)
     portfolio = Portfolio(kb.db)
-    predictor = Predictor(settings.risk_model_dir)
     mailer = mailer or build_mailer(settings)
     pilot = autopilot.Autopilot(settings, kb, portfolio, mailer)
 
@@ -973,11 +970,6 @@ def create_app(
         _conversation(conversation.lift_contact_block, conversations, customer_id, body.note, user)
         return get_customer(customer_id)
 
-    @app.get("/api/admin/collections/summary", response_model=schemas.CollectionsDashboard, **conv)
-    def collections_summary():
-        """The collections dashboard: work waiting, resolutions, promises, compliance."""
-        return dashboard.summary(kb.db)
-
     @app.get("/api/admin/inbox", response_model=schemas.Inbox, **conv)
     def inbox():
         """Everything across customers that waits for an officer: drafts to approve, blocked
@@ -1000,7 +992,7 @@ def create_app(
     @app.get("/api/admin/autopilot/customers/{customer_id}", **live)
     def autopilot_customer(customer_id: int):
         """One customer's saved context, tasks, emails and full activity timeline."""
-        found = autopilot.customer_detail(pilot.store, conversations, customer_id)
+        found = autopilot.customer_detail(pilot.store, pilot.agents, customer_id)
         if found is None:
             raise ApiError(404, "not_found", "The autopilot has not handled this customer.")
         return found
@@ -1041,26 +1033,6 @@ def create_app(
         )
 
     # --- admin: the Follow-up Agent --------------------------------------------------------
-
-    @app.get(
-        "/api/admin/follow-ups",
-        response_model=list[schemas.FollowUp],
-        dependencies=[admin],
-        tags=["follow-ups"],
-    )
-    def list_follow_ups(status: Literal["scheduled", "done", "cancelled"] | None = None):
-        """Follow-ups, soonest first."""
-        return conversations.list_follow_ups(status)
-
-    @app.post(
-        "/api/admin/follow-ups/run-due",
-        response_model=schemas.FollowUpRun,
-        dependencies=[admin],
-        tags=["follow-ups"],
-    )
-    def run_due_follow_ups():
-        """Carries out every scheduled follow-up whose time has come."""
-        return follow_up.run_due(kb, portfolio, kb.generator, conversations)
 
     @app.post(
         "/api/admin/follow-ups/{follow_up_id}/run",
@@ -1212,47 +1184,6 @@ def create_app(
     def simulate_change(customer_id: int, body: schemas.SimulateRequest, user: dict = admin):
         """The officer's own what-if; with decide, the Decision Agent decides for it too."""
         return _simulate(customer_id, body, user)
-
-    # --- admin: dataset prediction ---------------------------------------------------------
-
-    @app.get(
-        "/api/admin/predict/model",
-        response_model=schemas.PredictionModelInfo,
-        dependencies=[admin],
-        tags=["prediction"],
-    )
-    def prediction_model():
-        """The model saved by the notebook, or why it cannot be used."""
-        return predictor.info()
-
-    @app.post(
-        "/api/admin/predict/dataset",
-        response_model=schemas.DatasetPrediction,
-        dependencies=[admin],
-        tags=["prediction"],
-        responses=ERROR_RESPONSES,
-    )
-    def predict_dataset(file: UploadFile = File(...)):
-        """Scores every row of an uploaded CSV or Excel file and fills in the target column."""
-        if not (file.filename or "").lower().endswith(DATASET_EXTENSIONS):
-            raise ApiError(
-                415,
-                "unsupported_file_type",
-                f"Upload the dataset as a {', '.join(DATASET_EXTENSIONS)} file.",
-            )
-        limit = settings.max_upload_bytes
-        data = file.file.read(limit + 1)
-        if len(data) > limit:
-            raise ApiError(
-                413, "file_too_large", f"The file is larger than {settings.max_upload_mb} MB."
-            )
-        try:
-            return predictor.predict_file(file.filename, data)
-        except PredictionFailed as exc:
-            code = {413: "file_too_large", 503: "model_unavailable"}.get(
-                exc.status_code, "invalid_dataset"
-            )
-            raise ApiError(exc.status_code, code, str(exc)) from exc
 
     # --- admin: RAG ------------------------------------------------------------------------
 

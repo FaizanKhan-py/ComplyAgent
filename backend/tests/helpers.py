@@ -58,6 +58,7 @@ class FakeGenerator:
         self.error: LLMError | None = None
         self.structured_calls: list[dict] = []
         self.structured_replies: list[dict] = []
+        self.in_scope = True  # the AI Assistant's scope check, answered without a scripted reply
 
     def generate(self, question, sources, history):
         self.calls.append({"question": question, "sources": sources, "history": history})
@@ -72,6 +73,8 @@ class FakeGenerator:
         )
         if self.error:
             raise self.error
+        if schema.__name__ == "Scope":
+            return schema(in_scope=self.in_scope)
         return schema.model_validate(self.structured_replies.pop(0))
 
     def health(self):

@@ -263,6 +263,7 @@ class PortfolioSummary(BaseModel):
 
 class CustomerSummary(BaseModel):
     customer_id: int
+    name: str | None = None
     email: str | None = Field(description="Where collections emails go. Never sent to an LLM.")
     limit_bal: int
     age: int
@@ -383,49 +384,6 @@ class CustomerRecommendation(BaseModel):
     corrected: list[str] = Field(
         description="Rule breaks in the model's first reply that it fixed when asked again."
     )
-
-
-class PredictionModelInfo(BaseModel):
-    available: bool
-    message: str | None
-    model_name: str | None = None
-    features: list[str] = []
-    threshold: float | None = None
-    test_metrics: dict[str, float] | None = None
-
-
-class DatasetScores(BaseModel):
-    accuracy: float
-    precision: float
-    recall: float
-    f1: float
-    tn: int
-    fp: int
-    fn: int
-    tp: int
-
-
-class RowPrediction(BaseModel):
-    row: int
-    id: int | None
-    limit_bal: int
-    age: int
-    default_probability: float
-    predicted_default: int
-    risk_level: RiskLevel
-    actual_default: int | None
-
-
-class DatasetPrediction(BaseModel):
-    filename: str
-    model_name: str
-    threshold: float
-    rows: int
-    predicted_defaults: int
-    by_risk: dict[RiskLevel, int]
-    scores: DatasetScores | None
-    predictions: list[RowPrediction]
-    csv: str
 
 
 class AssistantRequest(BaseModel):
@@ -583,17 +541,6 @@ class FollowUp(BaseModel):
     outcome: str | None
     created_at: str
     done_at: str | None
-
-
-class FollowUpError(BaseModel):
-    id: int
-    error: str
-
-
-class FollowUpRun(BaseModel):
-    due: int
-    done: list[int]
-    failed: list[FollowUpError]
 
 
 class AuditEvent(BaseModel):
@@ -764,63 +711,6 @@ class MailboxPoll(BaseModel):
 
 
 # --- the collections dashboard --------------------------------------------------------------
-
-
-class DashboardWork(BaseModel):
-    pending_approval: int
-    awaiting_supervisor: int
-    blocked: int
-    approved_unsent: int
-    escalated: int
-    follow_ups_due: int
-
-
-class DashboardConversations(BaseModel):
-    open: int
-    escalated: int
-    closed: int
-    emails_per_resolution: float | None = Field(
-        description="Emails sent per closed conversation, on average."
-    )
-    recent_escalations: list[InboxEscalation]
-
-
-class DashboardPromises(BaseModel):
-    open: int
-    kept: int
-    broken: int
-    kept_rate: float | None = Field(description="Kept / (kept + broken).")
-    collected: int = Field(description="NT$ recorded in the ledger as paid.")
-
-
-class DashboardCompliance(BaseModel):
-    drafts_reviewed: int
-    first_round_pass_rate: float | None
-    average_rounds: float | None
-    sends_refused: int = Field(description="Sends the contact rules refused.")
-    do_not_contact: int
-
-
-class DayCount(BaseModel):
-    day: str
-    emails: int
-
-
-class DashboardActivity(BaseModel):
-    emails_sent: int
-    emails_delivered: int
-    follow_ups_scheduled: int
-    sent_by_day: list[DayCount]
-    intents: dict[str, int]
-
-
-class CollectionsDashboard(BaseModel):
-    generated_at: str
-    work: DashboardWork
-    conversations: DashboardConversations
-    promises: DashboardPromises
-    compliance: DashboardCompliance
-    activity: DashboardActivity
 
 
 Conversation.model_rebuild()  # it refers to FollowUp, defined after it

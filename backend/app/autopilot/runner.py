@@ -351,11 +351,15 @@ def customer_rows(store: Store) -> list[dict]:
     return out
 
 
-def customer_detail(store: Store, conversations, customer_id: int) -> dict | None:
-    """One customer's saved context, tasks, emails and full activity timeline."""
+def customer_detail(store: Store, agents: Agents, customer_id: int) -> dict | None:
+    """One customer's summary, saved context, tasks, emails and full activity timeline."""
+    from .agents import case_story
+
     ctx = store.context(customer_id)
     if ctx is None:
         return None
+    conversations = agents.conversations
+    customer = agents.portfolio.get_customer(customer_id) or {"customer_id": customer_id}
     conv = conversations.get(ctx["conversation_id"]) if ctx["conversation_id"] else None
     emails = [
         {k: m.get(k) for k in ("id", "direction", "status", "subject", "body", "intent",
@@ -365,6 +369,9 @@ def customer_detail(store: Store, conversations, customer_id: int) -> dict | Non
                            "approved", "blocked")
     ]  # fmt: skip
     return {
+        "name": customer.get("name"),
+        "email": customer.get("email"),
+        "summary": case_story(customer, ctx, agents._communication(customer_id)),
         "context": ctx,
         "conversation_status": conv and conv["status"],
         "emails": emails,

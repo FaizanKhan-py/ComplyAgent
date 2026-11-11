@@ -36,8 +36,6 @@ ADMIN_ROUTES = [
     ("post", "/api/admin/messages/1/approve"),
     ("post", "/api/admin/messages/1/reject"),
     ("post", "/api/admin/messages/1/send"),
-    ("get", "/api/admin/follow-ups"),
-    ("post", "/api/admin/follow-ups/run-due"),
     ("get", "/api/admin/autopilot/overview"),
     ("get", "/api/admin/autopilot/customers/1"),
     ("post", "/api/admin/autopilot/tasks/1/retry"),
@@ -47,7 +45,6 @@ ADMIN_ROUTES = [
     ("get", "/api/admin/audit/export"),
     ("get", "/api/admin/agents/graph"),
     ("get", "/api/admin/inbox"),
-    ("get", "/api/admin/collections/summary"),
     ("post", "/api/admin/email/poll"),
     ("get", "/api/admin/customers/1/ledger"),
     ("post", "/api/admin/customers/1/payments"),
@@ -57,8 +54,6 @@ ADMIN_ROUTES = [
     ("post", "/api/admin/customers/1/do-not-contact/lift"),
     ("get", "/api/admin/customers/1/counterfactuals"),
     ("post", "/api/admin/customers/1/counterfactuals"),
-    ("get", "/api/admin/predict/model"),
-    ("post", "/api/admin/predict/dataset"),
     ("post", "/api/admin/rag/query"),
 ]
 

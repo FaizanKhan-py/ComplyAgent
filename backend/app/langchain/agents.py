@@ -27,12 +27,23 @@ import re
 from contextvars import ContextVar
 from typing import Any
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
+from pydantic import BaseModel, Field
 
 from .indexes import PolicyRetriever, format_documents
 from .memory import AgentMemory
-from .prompts import AGENT_PROMPT
+from .prompts import AGENT_PROMPT, SCOPE_PROMPT
+
+OUT_OF_SCOPE = (
+    "I can only help with collections and compliance: the company's policies, customer "
+    "accounts, payments and credit risk. Please ask me something about those."
+)
+
+
+class Scope(BaseModel):
+    in_scope: bool = Field(description="True if the message is within ComplyAgent's domain.")
+
 
 MAX_LISTED = 25  # customers per list_overdue_customers call
 
@@ -203,6 +214,7 @@ class AssistantAgent:
         from langchain.agents import create_agent
 
         self.model_name = model_name
+        self.generator = generator
         self.memory = AgentMemory()
         self._agent = create_agent(
             chat_model,
@@ -217,6 +229,8 @@ class AssistantAgent:
         if conversation_id and not self.memory.knows(owner, conversation_id):
             conversation_id = None  # forgotten, or not this user's: start a new one
         conversation_id, config = self.memory.thread(owner, conversation_id)
+        if not self._in_scope(message, config):
+            return self._refusal(conversation_id)
         before = len(self._history(config))
         sources = _Sources()
         token = _current_sources.set(sources)
@@ -265,6 +279,33 @@ class AssistantAgent:
             "warning": None,
             "conversation_id": conversation_id,
             "steps": steps,
+        }
+
+    def _in_scope(self, message: str, config: dict) -> bool:
+        """Off-topic questions are turned away before the agent runs. The last turns are given,
+        so a short follow-up ("and for stage 3?") is judged with its context. If the check
+        itself fails, the agent's own instructions still keep it on topic."""
+        if self.generator is None:
+            return True
+        recent = [m for m in self._history(config) if isinstance(m, (HumanMessage, AIMessage))
+                  and m.content and not getattr(m, "tool_calls", None)][-4:]  # fmt: skip
+        try:
+            return self.generator.structured(
+                SCOPE_PROMPT, f"<message>\n{message[:2000]}\n</message>", Scope, history=recent
+            ).in_scope
+        except Exception:
+            return True
+
+    def _refusal(self, conversation_id: str) -> dict:
+        return {
+            "answer": OUT_OF_SCOPE,
+            "answer_mode": "generated",
+            "insufficient_evidence": True,
+            "sources": [],
+            "model": self.model_name,
+            "warning": None,
+            "conversation_id": conversation_id,
+            "steps": [],
         }
 
     def _history(self, config: dict) -> list:

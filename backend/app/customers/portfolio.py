@@ -66,7 +66,7 @@ FEATURES_SQL = """
 
 _CUSTOMER_ROWS = f"""
     SELECT c.customer_id, c.limit_bal, c.age, c.sex, c.education, c.marriage,
-           c.default_next_month AS actual_default, c.data_split, c.email,
+           c.default_next_month AS actual_default, c.data_split, c.email, c.name,
            h.repayment_status AS latest_status, h.bill_amt AS latest_bill,
            p.default_probability, p.predicted_default, {_RISK_SQL} AS risk_level
     FROM customers c

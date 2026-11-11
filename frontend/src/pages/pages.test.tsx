@@ -3,14 +3,11 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { answer, config, customer, customerDetail, doc, health, mockApi, portfolio } from '../test/fixtures'
 import { AuditTrail } from './AuditTrail'
-import { CollectionsDashboard } from './CollectionsDashboard'
 import { CustomerRecord } from './CustomerRecord'
-import { FollowUps } from './FollowUps'
 import { Inbox } from './Inbox'
 import { Customers } from './Customers'
 import { Documents } from './Documents'
 import { Playground } from './Playground'
-import { PredictDataset } from './PredictDataset'
 import { RiskDashboard } from './RiskDashboard'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -985,77 +982,6 @@ describe('AI Assistant', () => {
   })
 })
 
-describe('Predict Dataset', () => {
-  const prediction = (row: number, probability: number, actual: 0 | 1 | null) => ({
-    row,
-    id: row,
-    limit_bal: 50000,
-    age: 30,
-    default_probability: probability,
-    predicted_default: probability >= 0.5 ? 1 : 0,
-    risk_level: probability >= 0.7 ? 'high' : probability >= 0.4 ? 'medium' : 'low',
-    actual_default: actual,
-  })
-  const model = {
-    available: true,
-    message: null,
-    model_name: 'XGBoost (tuned)',
-    features: ['LIMIT_BAL', 'AGE'],
-    threshold: 0.5,
-    test_metrics: { roc_auc: 0.769, recall: 0.62, accuracy: 0.74 },
-  }
-
-  it('scores an uploaded dataset and shows the predicted target for every row', async () => {
-    const user = userEvent.setup({ applyAccept: false })
-    const api = mockApi({
-      'GET /api/admin/predict/model': () => ({ body: model }),
-      'POST /api/admin/predict/dataset': () => ({
-        body: {
-          filename: 'customers.csv',
-          model_name: 'XGBoost (tuned)',
-          threshold: 0.5,
-          rows: 3,
-          predicted_defaults: 1,
-          by_risk: { high: 1, medium: 0, low: 2 },
-          scores: { accuracy: 2 / 3, precision: 1, recall: 0.5, f1: 0.67, tn: 1, fp: 0, fn: 1, tp: 1 },
-          predictions: [prediction(1, 0.82, 1), prediction(2, 0.1, 0), prediction(3, 0.2, 1)],
-          csv: 'ID,Y\n1,1\n',
-        },
-      }),
-    })
-    page(<PredictDataset />)
-    expect(await screen.findByText('0.769', { exact: false })).toBeInTheDocument()
-    const input = screen.getByLabelText('Choose a dataset to score')
-
-    await user.upload(input, new File(['x'], 'notes.txt'))
-    expect(await screen.findByText(/“notes.txt” is not a CSV or Excel file/)).toBeInTheDocument()
-    expect(api.count('POST /api/admin/predict/dataset')).toBe(0)
-
-    await user.upload(input, new File(['ID,X1'], 'customers.csv'))
-    const summary = within(await screen.findByRole('region', { name: 'Prediction summary' }))
-    expect(summary.getByText('Rows scored').nextSibling).toHaveTextContent('3')
-    expect(summary.getByText('Accuracy vs. actual').nextSibling).toHaveTextContent('66.7%')
-    expect(screen.getAllByText('0 · Will not default')).toHaveLength(2)
-    expect(screen.getByText('1 · Will default')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Download CSV with target column' })).toBeInTheDocument()
-
-    await user.selectOptions(screen.getByLabelText('Predicted risk'), 'high')
-    expect(screen.queryByText('0 · Will not default')).not.toBeInTheDocument()
-    expect(screen.getByText('Showing 1–1 of 1')).toBeInTheDocument()
-  })
-
-  it('explains how to create the model when the notebook has not saved one', async () => {
-    mockApi({
-      'GET /api/admin/predict/model': () => ({
-        body: { ...model, available: false, message: 'No trained model found. Run the notebook.' },
-      }),
-    })
-    page(<PredictDataset />)
-    expect(await screen.findByText('No trained model found. Run the notebook.')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Choose file' })).toBeDisabled()
-  })
-})
-
 describe('Audit Trail', () => {
   it('lists agent steps and officer actions, filters them and shows the details', async () => {
     const user = userEvent.setup()
@@ -1095,36 +1021,6 @@ describe('Audit Trail', () => {
     await user.selectOptions(screen.getByLabelText('Show'), 'agent')
     expect(await screen.findByText('Recommended send reminder.')).toBeInTheDocument()
     expect(api.count('GET /api/admin/audit?customer_id=7&event=agent&limit=50')).toBe(1)
-  })
-})
-
-describe('Follow-ups', () => {
-  it('lists scheduled follow-ups and runs the due ones', async () => {
-    const user = userEvent.setup()
-    mockApi({
-      'GET /api/admin/follow-ups?status=scheduled': () => ({
-        body: [
-          {
-            id: 9,
-            conversation_id: 3,
-            customer_id: 7,
-            due_at: '2020-01-01T00:00:00+00:00',
-            action: 'schedule_call',
-            reason: 'Two emails without a reply.',
-            status: 'scheduled',
-            outcome: null,
-            created_at: '2020-01-01T00:00:00+00:00',
-            done_at: null,
-          },
-        ],
-      }),
-      'POST /api/admin/follow-ups/run-due': () => ({ body: { due: 1, done: [9], failed: [] } }),
-    })
-    page(<FollowUps />)
-    expect(await screen.findByText('Call the customer')).toBeInTheDocument()
-    expect(screen.getByText('Due now')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Run due follow-ups' }))
-    expect(await screen.findByText('1 of 1 due follow-up(s) done.')).toBeInTheDocument()
   })
 })
 
@@ -1202,44 +1098,5 @@ describe('Live agent steps', () => {
     expect(within(status).getByText(/Case analysed: early arrears./)).toBeInTheDocument()
     expect(within(status).getByText('(round 1)')).toBeInTheDocument()
     expect(within(status).getByText('Working on the next step…')).toBeInTheDocument()
-  })
-})
-
-describe('Collections dashboard', () => {
-  it('shows the work waiting, the results and the compliance figures', async () => {
-    mockApi({
-      'GET /api/admin/collections/summary': () => ({
-        body: {
-          generated_at: '2026-10-27T10:00:00+00:00',
-          work: { pending_approval: 2, awaiting_supervisor: 1, blocked: 1, approved_unsent: 0, escalated: 6, follow_ups_due: 4 },
-          conversations: {
-            open: 5,
-            escalated: 3,
-            closed: 2,
-            emails_per_resolution: 2.5,
-            recent_escalations: [{ id: 9, customer_id: 7, status_reason: 'The customer disputes the debt.', updated_at: '2026-10-27T09:00:00+00:00' }],
-          },
-          promises: { open: 1, kept: 3, broken: 1, kept_rate: 0.75, collected: 12000 },
-          compliance: { drafts_reviewed: 10, first_round_pass_rate: 0.6, average_rounds: 1.5, sends_refused: 2, do_not_contact: 1 },
-          activity: {
-            emails_sent: 6,
-            emails_delivered: 0,
-            follow_ups_scheduled: 5,
-            sent_by_day: [{ day: '2026-10-26', emails: 2 }, { day: '2026-10-27', emails: 4 }],
-            intents: { promise_to_pay: 3, dispute: 1 },
-          },
-        },
-      }),
-    })
-    page(<CollectionsDashboard />)
-    const waiting = within(await screen.findByRole('region', { name: 'Work waiting for a person' }))
-    expect(waiting.getByText('3')).toBeInTheDocument() // 2 + 1 waiting for approval
-    expect(waiting.getByText(/1 need a team lead/)).toBeInTheDocument()
-    const results = within(screen.getByRole('region', { name: 'Results' }))
-    expect(results.getByText('75%')).toBeInTheDocument()
-    expect(results.getByText('2.5')).toBeInTheDocument()
-    expect(results.getByText('60%')).toBeInTheDocument()
-    expect(screen.getByText('Promise to pay')).toBeInTheDocument()
-    expect(screen.getByText(/The customer disputes the debt./)).toBeInTheDocument()
   })
 })

@@ -8,7 +8,6 @@ import type {
   AuditList,
   AuditQuery,
   AuthStatus,
-  CollectionsDashboard,
   Conversation,
   CustomerCreate,
   CustomerCreated,
@@ -16,10 +15,7 @@ import type {
   CustomerGuidance,
   CustomerList,
   CustomerQuery,
-  DatasetPrediction,
   DeleteResult,
-  FollowUp,
-  FollowUpRun,
   Inbox,
   Ledger,
   MailboxPoll,
@@ -27,7 +23,6 @@ import type {
   KnowledgeBaseStats,
   PolicyDocument,
   PortfolioSummary,
-  PredictionModelInfo,
   QueryRequest,
   QueryResponse,
   RegisterRequest,
@@ -283,7 +278,6 @@ export const api = {
   sendMessage: (id: number) => request<Conversation>(`/api/admin/messages/${id}/send`, { method: 'POST' }),
 
   inbox: () => request<Inbox>('/api/admin/inbox'),
-  collectionsSummary: () => request<CollectionsDashboard>('/api/admin/collections/summary'),
   pollEmail: () => request<MailboxPoll>('/api/admin/email/poll', { method: 'POST' }),
   ledger: (customerId: number) => request<Ledger>(`/api/admin/customers/${customerId}/ledger`),
   recordPayment: (customerId: number, body: { amount: number; paid_on: string; note?: string }) =>
@@ -302,9 +296,6 @@ export const api = {
       json: { note },
     }),
 
-  followUps: (status?: FollowUp['status']) =>
-    request<FollowUp[]>(`/api/admin/follow-ups${status ? `?status=${status}` : ''}`),
-  runDueFollowUps: () => request<FollowUpRun>('/api/admin/follow-ups/run-due', { method: 'POST' }),
   runFollowUp: (id: number) => request<Conversation>(`/api/admin/follow-ups/${id}/run`, { method: 'POST' }),
 
   autopilot: () => request<AutopilotOverview>('/api/admin/autopilot/overview'),
@@ -342,12 +333,6 @@ export const api = {
   simulate: (customerId: number, body: SimulateRequest, signal?: AbortSignal) =>
     request<Simulation>(`/api/admin/customers/${customerId}/counterfactuals`, { method: 'POST', json: body, signal }),
 
-  predictionModel: () => request<PredictionModelInfo>('/api/admin/predict/model'),
-  predictDataset: (file: File) => {
-    const body = new FormData()
-    body.append('file', file)
-    return request<DatasetPrediction>('/api/admin/predict/dataset', { method: 'POST', body })
-  },
 
   query: (body: QueryRequest, signal?: AbortSignal) =>
     request<QueryResponse>('/api/admin/rag/query', { method: 'POST', json: body, signal }),

@@ -210,6 +210,15 @@ def test_the_assistant_can_ask_the_decision_agent(client, indexed, generator, tm
     assert result.startswith("Action: offer_payment_plan, channel: phone, priority: high")
 
 
+def test_the_assistant_turns_away_questions_outside_collections(client, generator):
+    model = ScriptedToolModel(replies=[AIMessage("Paris.")])
+    generator.chat_model = model
+    generator.in_scope = False
+    body = client.post(URL, json={"message": "What is the capital of France?"}).json()
+    assert body["answer"].startswith("I can only help with collections and compliance")
+    assert model.seen == []  # the agent never ran
+
+
 def test_an_ordinary_user_gets_policy_search_only_and_their_own_memory(settings):
     from fastapi.testclient import TestClient
 

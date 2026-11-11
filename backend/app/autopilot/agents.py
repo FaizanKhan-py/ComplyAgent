@@ -15,6 +15,7 @@ a later event (a reply, a payment) builds on what is known instead of starting a
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 
 from ..core.config import Settings
@@ -90,6 +91,75 @@ def plan_of(rec: Recommendation) -> dict:
         "escalate": escalate,
         "next": next_step,
     }
+
+
+STAGE_TEXT = {
+    "queued": "waiting for the Analysis Agent", "analysing": "being analysed",
+    "deciding": "with the Decision Agent", "writing": "an email is being written",
+    "awaiting_reply": "waiting for the customer's reply", "escalated": "with an officer",
+    "waiting": "no contact for now", "resolved": "resolved", "failed": "stopped by an error",
+}  # fmt: skip
+
+
+CITATION = re.compile(r"\s*\((?:F?\d+)(?:,\s*F?\d+)*\)")  # "(F1, 3)": ids only the agents use
+
+
+def case_story(customer: dict, ctx: dict, comms: dict) -> list[str]:
+    """Everything about one customer in a few plain sentences: the payment history, the risk,
+    what the agents found and decided, the emails with the customer, and where it stands. Built
+    from the records, not by a model, so it costs nothing and is always accurate."""
+    lines = []
+    history = customer.get("history") or []
+    if history:
+        late = sum(1 for h in history if h["repayment_status"] > 0)
+        billed = sum(max(h["bill_amt"], 0) for h in history)
+        paid = sum(h["pay_amt"] for h in history)
+        share = f"{paid / billed:.0%}" if billed else "all"
+        overdue = max(customer.get("latest_status") or 0, 0)
+        lines.append(
+            f"Credit limit NT${customer['limit_bal']:,}. In the last 6 months the customer was "
+            f"late in {late} month(s) and paid {share} of the bills. The latest bill is "
+            f"NT${customer.get('latest_bill') or 0:,}, now {overdue} month(s) overdue."
+        )
+    p = customer.get("default_probability")
+    if p is not None:
+        lines.append(f"Risk model: {p:.0%} chance of default ({customer.get('risk_level')} risk).")
+    a = ctx.get("analysis")
+    if a:
+        lines.append(f"Analysis Agent: {a['analysis']['summary']} {a['prediction_check']['note']}")
+        care = [f["text"] for f in a["analysis"].get("care_flags", [])]
+        if care:
+            lines.append(f"Signs to handle with care: {'; '.join(care)}")
+    d = ctx.get("decision")
+    if d:
+        plan = d["plan"]
+        steps = {
+            "email": f"email the customer ({plan['tone']} tone)",
+            "call": "call the customer",
+            "escalate": "hand the case to an officer",
+            "wait": "no contact for now",
+        }
+        step = steps[plan["next"]]
+        why = CITATION.sub("", " ".join(r["text"] for r in d["recommendation"]["reasons"][:2]))
+        offer = " A hardship plan is offered." if plan["hardship_offer"] else ""
+        lines.append(f"Decision Agent: {step}.{offer} {why}")
+    talk = f"Emails sent: {comms['emails_sent']}; replies from the customer: {comms['replies']}."
+    if comms.get("last_reply_summary"):
+        talk += f" Last reply ({(comms['last_reply_intent'] or '').replace('_', ' ')}): "
+        talk += comms["last_reply_summary"]
+    lines.append(talk)
+    if comms["paid_since"] or comms["broken_promises"] or comms["open_promise"]:
+        promise = comms["open_promise"]
+        lines.append(
+            f"Paid since the records: NT${comms['paid_since']:,}. Broken promises: "
+            f"{comms['broken_promises']}."
+            + (f" Promised to pay by {promise['due_on']}." if promise else "")
+        )
+    if ctx.get("escalation"):
+        lines.append(f"Escalated: {ctx['escalation']['reason']}")
+    if ctx.get("stage"):
+        lines.append(f"Now: {STAGE_TEXT.get(ctx['stage'], ctx['stage'])}.")
+    return lines
 
 
 class Agents:
@@ -361,12 +431,26 @@ class Agents:
         if conv and conv["status"] == "open":
             conversation.escalate(self.conversations, conv, reason, "Decision Agent")
         officers = self._officers()
-        subject = (f"[ComplyAgent] Call customer #{cid}" if kind == "call"
-                   else f"[ComplyAgent] Customer #{cid} needs an officer")  # fmt: skip
-        summary = ((ctx.get("analysis") or {}).get("analysis") or {}).get("summary", "")
-        body = (f"Customer #{cid} was handed to a person by the autopilot.\n\nWhy: {reason}\n\n"
-                f"Case summary: {summary}\n\nOpen ComplyAgent > Live operations to see the full "
-                "timeline.")  # fmt: skip
+        customer = self.portfolio.get_customer(cid) or {"customer_id": cid}
+        who = customer.get("name") or f"Customer #{cid}"
+        subject = (f"[ComplyAgent] Call {who} (customer #{cid})" if kind == "call"
+                   else f"[ComplyAgent] {who} (customer #{cid}) needs an officer")  # fmt: skip
+        story = case_story(customer, {**ctx, "escalation": None}, self._communication(cid))
+        body = "\n".join([
+            f"{'Please call this customer.' if kind == 'call' else 'This case needs an officer.'}",
+            "",
+            f"Why: {reason}",
+            "",
+            "Customer",
+            f"  Name:      {customer.get('name') or 'not recorded'}",
+            f"  Email:     {customer.get('email') or 'not recorded'}",
+            f"  Customer:  #{cid}",
+            "",
+            "Summary",
+            *[f"  - {line}" for line in story],
+            "",
+            "Open ComplyAgent > Live Operations and click the customer for the full timeline.",
+        ])  # fmt: skip
         delivered, errors = 0, []
         for to in officers:
             try:

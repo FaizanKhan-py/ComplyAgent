@@ -189,6 +189,7 @@ export interface PortfolioSummary {
 
 export interface CustomerSummary {
   customer_id: number
+  name?: string | null
   /** Where collections emails go; null when none is on record. */
   email: string | null
   limit_bal: number
@@ -294,50 +295,6 @@ export interface CustomerGuidance {
   sections: GuidanceSection[]
 }
 
-export interface PredictionModelInfo {
-  available: boolean
-  message: string | null
-  model_name: string | null
-  features: string[]
-  threshold: number | null
-  test_metrics: Record<string, number> | null
-}
-
-export interface DatasetScores {
-  accuracy: number
-  precision: number
-  recall: number
-  f1: number
-  tn: number
-  fp: number
-  fn: number
-  tp: number
-}
-
-export interface RowPrediction {
-  row: number
-  id: number | null
-  limit_bal: number
-  age: number
-  default_probability: number
-  predicted_default: 0 | 1
-  risk_level: RiskLevel
-  actual_default: 0 | 1 | null
-}
-
-export interface DatasetPrediction {
-  filename: string
-  model_name: string
-  threshold: number
-  rows: number
-  predicted_defaults: number
-  by_risk: Record<RiskLevel, number>
-  scores: DatasetScores | null
-  predictions: RowPrediction[]
-  /** The uploaded file with the target column filled in, ready to download. */
-  csv: string
-}
-
 // --- Decision Agent and message drafts -------------------------------------------------------
 
 export type DecisionAction = 'send_reminder' | 'offer_payment_plan' | 'schedule_call' | 'escalate_to_human' | 'no_contact'
@@ -359,7 +316,6 @@ export interface PolicyPassage {
   score: number
   text: string
 }
-
 
 // --- AI Assistant (LangChain agent) ----------------------------------------------------------
 
@@ -501,12 +457,6 @@ export interface FollowUp {
   outcome: string | null
   created_at: string
   done_at: string | null
-}
-
-export interface FollowUpRun {
-  due: number
-  done: number[]
-  failed: { id: number; error: string }[]
 }
 
 // --- Audit trail ------------------------------------------------------------------------------
@@ -656,41 +606,6 @@ export interface MailboxPoll {
 
 // --- Collections dashboard --------------------------------------------------------------------
 
-export interface CollectionsDashboard {
-  generated_at: string
-  work: {
-    pending_approval: number
-    awaiting_supervisor: number
-    blocked: number
-    approved_unsent: number
-    escalated: number
-    follow_ups_due: number
-  }
-  conversations: {
-    open: number
-    escalated: number
-    closed: number
-    /** Emails sent per closed conversation, on average. */
-    emails_per_resolution: number | null
-    recent_escalations: { id: number; customer_id: number; status_reason: string | null; updated_at: string }[]
-  }
-  promises: { open: number; kept: number; broken: number; kept_rate: number | null; collected: number }
-  compliance: {
-    drafts_reviewed: number
-    first_round_pass_rate: number | null
-    average_rounds: number | null
-    sends_refused: number
-    do_not_contact: number
-  }
-  activity: {
-    emails_sent: number
-    emails_delivered: number
-    follow_ups_scheduled: number
-    sent_by_day: { day: string; emails: number }[]
-    intents: Record<string, number>
-  }
-}
-
 // --- Autopilot (live operations) ------------------------------------------------------------
 
 export type AutopilotStage =
@@ -768,6 +683,10 @@ export interface AutopilotEvent {
 }
 
 export interface AutopilotCustomer {
+  name: string | null
+  email: string | null
+  /** Everything about the customer in a few plain sentences, from the records. */
+  summary?: string[]
   context: {
     customer_id: number
     stage: AutopilotStage

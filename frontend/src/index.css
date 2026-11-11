@@ -1142,3 +1142,6 @@ input[aria-invalid='true'] { border-color: var(--error); box-shadow: 0 0 0 3px v
 .live-email-in { border-left: 3px solid var(--primary); }
 .live-email-body { white-space: pre-wrap; font: inherit; font-size: 0.875rem; margin: 6px 0 0; max-height: 14em; overflow: auto; }
 .live-timeline { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: 0.875rem; max-height: 22em; overflow: auto; }
+.live-summary { background: var(--surface); border: 1px solid var(--rule); border-radius: var(--r-sm); padding: 12px 16px; margin-bottom: 12px; }
+.live-summary h3 { margin-top: 0 !important; }
+.live-summary ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: 0.9rem; }
