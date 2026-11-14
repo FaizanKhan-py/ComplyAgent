@@ -16,3 +16,5 @@ backend/storage/
 
 # Local settings and API keys. The template is backend/.env.example.
 .env
+*.zip
+xyz/knowledge_base.sqlite3
